@@ -3,8 +3,8 @@ from __future__ import annotations
 import gymnasium as gym
 import numpy as np
 
-from rl4xs_wsi.envs import make_env
-from rl4xs_wsi.testing.synthetic import SyntheticEpisodeSource
+from wsi_lab.envs import make_env
+from wsi_lab.testing.synthetic import SyntheticEpisodeSource
 
 
 def _factory():

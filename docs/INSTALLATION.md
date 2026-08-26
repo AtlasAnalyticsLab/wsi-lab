@@ -94,14 +94,14 @@ from importlib import metadata
 
 sam2_commit = "2b90b9f5ceec907a1c18123530e92e794ad901a4"
 
-for name in ("atlas-patch", "SAM-2", "rl4xs-wsi"):
+for name in ("atlas-patch", "SAM-2", "wsi-lab"):
     distribution = metadata.distribution(name)
     print(
         f"distribution={distribution.metadata['Name']} "
         f"version={distribution.version} location={distribution.locate_file('')}"
     )
 
-for name in ("atlas_patch", "sam2", "rl4xs_wsi"):
+for name in ("atlas_patch", "sam2", "wsi_lab"):
     specification = importlib.util.find_spec(name)
     if specification is None:
         raise SystemExit(f"required import is unavailable: {name}")
@@ -206,7 +206,9 @@ There is deliberately no Otsu, HSV, or other fallback. AtlasPatch failures inclu
 - `OpenSlideUnsupportedFormatError`: verify both the Conda `openslide` native library and `openslide-python` binding are installed in `wsi-lab`.
 - CUDA/torchvision operator errors: recreate the environment so PyTorch, torchvision, and `pytorch-cuda` are solved together.
 - AtlasPatch import/command failure: verify `atlas-patch==1.1.0`, the pinned SAM2 commit, and access to `AtlasAnalyticsLab/AtlasPatch/model.pth` with `python -m pip freeze` and the captured reproduction command.
-- Missing `${CAMELYON16_ROOT}`: export it before loading the supplied config.
+- Missing dataset-root variable: export the variable named by the selected
+  example config (`CAMELYON16_ROOT`, `CAMELYON17_ROOT`, `TCGA_NSCLC_ROOT`, or
+  `WSI_DATASET_ROOT`) before loading it.
 - AtlasPatch licensing: review [THIRD_PARTY.md](THIRD_PARTY.md) before distribution or commercial use.
 
 ## Documentation and configuration in distributions
@@ -214,7 +216,7 @@ There is deliberately no Otsu, HSV, or other fallback. AtlasPatch failures inclu
 Source distributions contain `README.md`, `environment.yml`, `configs/*.yaml`, and `docs/*.md`. Wheels install the same user-facing assets under the environment data prefix:
 
 ```text
-<sys.prefix>/share/rl4xs-wsi/
+<sys.prefix>/share/wsi-lab/
 ```
 
 Find that location without assuming a platform-specific prefix:
@@ -224,7 +226,7 @@ python - <<'PY'
 import sysconfig
 from pathlib import Path
 
-print(Path(sysconfig.get_path("data")) / "share" / "rl4xs-wsi")
+print(Path(sysconfig.get_path("data")) / "share" / "wsi-lab")
 PY
 ```
 

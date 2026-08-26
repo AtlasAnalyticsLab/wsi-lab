@@ -7,15 +7,15 @@ import pytest
 
 pytest.importorskip("torch")
 
-from rl4xs_wsi.belief.evaluation import (
+from wsi_lab.belief.evaluation import (
     BeliefPredictions,
     binary_auroc,
     compute_belief_metrics,
     evaluate_full_bags_streaming,
     evaluate_predictions,
 )
-from rl4xs_wsi.belief.model import GatedAttentionMIL
-from rl4xs_wsi.belief.sampler import SlideEmbeddingRecord
+from wsi_lab.belief.model import GatedAttentionMIL
+from wsi_lab.belief.sampler import SlideEmbeddingRecord
 
 
 def test_exact_auroc_and_ties() -> None:

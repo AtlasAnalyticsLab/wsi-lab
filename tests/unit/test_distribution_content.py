@@ -20,6 +20,9 @@ USER_ASSETS = (
     "environment.yml",
     "configs/camelyon16.example.yaml",
     "configs/camelyon16.yaml",
+    "configs/camelyon17.example.yaml",
+    "configs/generic.example.yaml",
+    "configs/tcga_nsclc.example.yaml",
     "docs/CONFIGURATION.md",
     "docs/DATA_FORMAT.md",
     "docs/DESIGN.md",
@@ -76,10 +79,10 @@ def test_sdist_and_wheel_retain_user_facing_assets(tmp_path: Path) -> None:
 
     with zipfile.ZipFile(wheel) as archive:
         wheel_members = tuple(PurePosixPath(name) for name in archive.namelist())
-    assert PurePosixPath("rl4xs_wsi/__init__.py") in wheel_members
+    assert PurePosixPath("wsi_lab/__init__.py") in wheel_members
     assert any(member.name == "entry_points.txt" for member in wheel_members)
     for relative in USER_ASSETS:
-        suffix = PurePosixPath("share") / "rl4xs-wsi" / relative
+        suffix = PurePosixPath("share") / "wsi-lab" / relative
         assert any(
             member.parts[-len(suffix.parts) :] == suffix.parts for member in wheel_members
         ), relative

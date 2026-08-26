@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
-from rl4xs_wsi.rl.evaluation import (
+from wsi_lab.rl.evaluation import (
     EpisodeEvaluation,
     aggregate_evaluation,
     evaluate_policy,

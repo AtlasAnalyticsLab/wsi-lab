@@ -3,9 +3,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from rl4xs_wsi.errors import PreprocessingError
-from rl4xs_wsi.preprocessing.geometry import GeometryBuilder
-from rl4xs_wsi.preprocessing.mapping import map_embeddings_to_grid
+from wsi_lab.errors import PreprocessingError
+from wsi_lab.preprocessing.geometry import GeometryBuilder
+from wsi_lab.preprocessing.mapping import map_embeddings_to_grid
 
 
 def test_dataset_global_offsets_are_deterministic_and_noncolliding() -> None:

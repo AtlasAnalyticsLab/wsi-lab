@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from rl4xs_wsi.rl.networks import RecurrentActorCritic
+from wsi_lab.rl.networks import RecurrentActorCritic
 
 
 def _observation(batch: int) -> dict[str, torch.Tensor]:

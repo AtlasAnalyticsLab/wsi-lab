@@ -7,9 +7,9 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-from rl4xs_wsi.data.base import DatasetAdapter, EmbeddingLocation, SlideRecord
-from rl4xs_wsi.data.embeddings.hdf5 import AtlasPatchHDF5Reader
-from rl4xs_wsi.data.validation import DatasetValidator, ValidationOptions
+from wsi_lab.data.base import DatasetAdapter, EmbeddingLocation, SlideRecord
+from wsi_lab.data.embeddings.hdf5 import AtlasPatchHDF5Reader
+from wsi_lab.data.validation import DatasetValidator, ValidationOptions
 
 
 class MiniAdapter(DatasetAdapter):
@@ -126,3 +126,47 @@ def test_selected_development_ids_do_not_touch_other_embeddings_or_wsis(tmp_path
     assert report.complete
     assert set(report.per_file) == {"normal_001@wsi", "normal_001@2.5x"}
     assert not any(issue.slide_id == "test_001" for issue in report.issues)
+
+
+def test_validation_accepts_only_explicitly_unlabeled_blind_test_records(tmp_path: Path) -> None:
+    blind = MiniAdapter(tmp_path, ("blind_001",))
+    blind._records["blind_001"] = SlideRecord(
+        slide_id="blind_001",
+        slide_path=tmp_path / "blind_001.tif",
+        label=None,
+        label_name="unlabeled",
+        official_cohort="test_unlabeled",
+    )
+    _write_h5(tmp_path / "blind_001.h5")
+
+    accepted = DatasetValidator(
+        blind,
+        options=ValidationOptions(
+            check_wsi_existence=False,
+            check_wsi_readability=False,
+            check_feature_finiteness=False,
+        ),
+    ).validate()
+
+    assert not any(issue.code == "invalid_label" for issue in accepted.issues)
+
+    invalid = MiniAdapter(tmp_path, ("missing_001",))
+    invalid._records["missing_001"] = SlideRecord(
+        slide_id="missing_001",
+        slide_path=tmp_path / "missing_001.tif",
+        label=None,
+        label_name="missing",
+        official_cohort="development",
+    )
+    _write_h5(tmp_path / "missing_001.h5")
+
+    rejected = DatasetValidator(
+        invalid,
+        options=ValidationOptions(
+            check_wsi_existence=False,
+            check_wsi_readability=False,
+            check_feature_finiteness=False,
+        ),
+    ).validate()
+
+    assert any(issue.code == "invalid_label" for issue in rejected.issues)

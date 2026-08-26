@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from rl4xs_wsi.wsi.cache import PersistentViewportCache
+from wsi_lab.wsi.cache import PersistentViewportCache
 
 
 def test_persistent_viewport_cache_is_lossless_lazy_and_input_fingerprinted(tmp_path: Path) -> None:

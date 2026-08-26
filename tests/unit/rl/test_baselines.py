@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from rl4xs_wsi.baselines import (
+from wsi_lab.baselines import (
     ConfidenceThresholdPolicy,
     FixedBudgetPolicy,
     RasterPolicy,

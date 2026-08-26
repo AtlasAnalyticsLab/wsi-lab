@@ -3,12 +3,12 @@ requires = ["setuptools>=75", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rl4xs-wsi"
+name = "wsi-lab"
 version = "0.1.0"
 description = "Recurrent reinforcement learning for sequential whole-slide image examination"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
-authors = [{name = "RL4XS WSI contributors"}]
+authors = [{name = "WSI Lab contributors"}]
 dependencies = [
   "numpy>=1.26,<3",
   "torch>=2.5.1,<3",
@@ -44,21 +44,21 @@ dev = [
 wandb = ["wandb>=0.19"]
 
 [project.scripts]
-rl4xs-wsi = "rl4xs_wsi.cli:main"
+wsi-lab = "wsi_lab.cli:main"
 
 [project.entry-points."gymnasium.envs"]
-RL4XSWSI-v0 = "rl4xs_wsi.envs:make_env"
+WSILab-v0 = "wsi_lab.envs:make_env"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 # Preserve project-facing environment, configuration, and documentation
 # assets in wheels as well as source distributions. Setuptools installs these
-# below <sys.prefix>/share/rl4xs-wsi.
+# below <sys.prefix>/share/wsi-lab.
 [tool.setuptools.data-files]
-"share/rl4xs-wsi" = ["README.md", "environment.yml"]
-"share/rl4xs-wsi/configs" = ["configs/*.yaml"]
-"share/rl4xs-wsi/docs" = ["docs/*.md"]
+"share/wsi-lab" = ["README.md", "environment.yml"]
+"share/wsi-lab/configs" = ["configs/*.yaml"]
+"share/wsi-lab/docs" = ["docs/*.md"]
 
 [tool.ruff]
 target-version = "py311"

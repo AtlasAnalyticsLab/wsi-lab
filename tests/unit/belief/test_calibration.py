@@ -4,12 +4,12 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from rl4xs_wsi.belief.calibration import (  # noqa: E402
+from wsi_lab.belief.calibration import (  # noqa: E402
     TemperatureScaler,
     fit_temperature,
     save_calibration,
 )
-from rl4xs_wsi.errors import TestSplitAccessError  # noqa: E402
+from wsi_lab.errors import TestSplitAccessError  # noqa: E402
 
 
 def test_temperature_fit_improves_overconfident_validation_logits(tmp_path) -> None:

@@ -4,9 +4,9 @@ import math
 
 import torch
 
-from rl4xs_wsi.rl.networks import RecurrentActorCritic
-from rl4xs_wsi.rl.recurrent_ppo import PPOConfig, ppo_update
-from rl4xs_wsi.rl.rollout import RecurrentRolloutBuffer
+from wsi_lab.rl.networks import RecurrentActorCritic
+from wsi_lab.rl.recurrent_ppo import PPOConfig, ppo_update
+from wsi_lab.rl.rollout import RecurrentRolloutBuffer
 
 
 def test_one_synthetic_recurrent_ppo_optimizer_step() -> None:

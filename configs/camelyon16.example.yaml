@@ -99,4 +99,4 @@ rl:
 logging:
   tensorboard: true
   wandb: false
-  wandb_project: rl4xs-wsi
+  wandb_project: wsi-lab

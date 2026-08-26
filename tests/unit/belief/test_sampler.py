@@ -5,7 +5,7 @@ import pytest
 
 pytest.importorskip("torch")
 
-from rl4xs_wsi.belief.sampler import (
+from wsi_lab.belief.sampler import (
     PartialBagSampler,
     PartialBagSamplingConfig,
     SlideEmbeddingRecord,

@@ -4,12 +4,12 @@ from pathlib import Path
 
 import torch
 
-from rl4xs_wsi.config.models import AppConfig, DatasetConfig, WorkspaceConfig
-from rl4xs_wsi.pipeline.planner import artifact_paths, build_plan, stage_fingerprints
-from rl4xs_wsi.pipeline.stages import Stage, StageAction
-from rl4xs_wsi.rl.checkpoints import save_ppo_checkpoint
-from rl4xs_wsi.rl.recurrent_ppo import PPOConfig
-from rl4xs_wsi.utils.atomic import atomic_json_dump
+from wsi_lab.config.models import AppConfig, DatasetConfig, WorkspaceConfig
+from wsi_lab.pipeline.planner import artifact_paths, build_plan, stage_fingerprints
+from wsi_lab.pipeline.stages import Stage, StageAction
+from wsi_lab.rl.checkpoints import save_ppo_checkpoint
+from wsi_lab.rl.recurrent_ppo import PPOConfig
+from wsi_lab.utils.atomic import atomic_json_dump
 
 
 def test_dry_plan_is_non_mutating(tmp_path: Path) -> None:
@@ -195,3 +195,59 @@ def test_ppo_checkpoint_does_not_override_manifest_fingerprint_mismatch(
 
     assert decision.action is StageAction.TRAIN
     assert "fingerprint changed" in decision.reason
+
+
+def test_generic_tissue_sidecar_changes_only_tissue_dependent_fingerprints(
+    tmp_path: Path,
+) -> None:
+    dataset_root = tmp_path / "generic"
+    (dataset_root / "images").mkdir(parents=True)
+    (dataset_root / "masks").mkdir()
+    (dataset_root / "images" / "case-001.svs").touch()
+    tissue_mask = dataset_root / "masks" / "case-001.tif"
+    tissue_mask.write_bytes(b"first-mask")
+    (dataset_root / "metadata.csv").write_text(
+        "slide_id,image_path,label,label_name,patient_id,center,official_cohort,"
+        "tissue_mask_path\n"
+        "case-001,images/case-001.svs,0,negative,patient-001,site-a,development,"
+        "masks/case-001.tif\n",
+        encoding="utf-8",
+    )
+    config = AppConfig(
+        dataset=DatasetConfig(name="generic", root=dataset_root),
+        workspace=WorkspaceConfig(root=tmp_path / "workspace"),
+    )
+
+    before = stage_fingerprints(config)
+    tissue_mask.write_bytes(b"second-mask-with-a-different-size")
+    after = stage_fingerprints(config)
+
+    assert before[Stage.DATASET] == after[Stage.DATASET]
+    assert before[Stage.BELIEF_DATA] == after[Stage.BELIEF_DATA]
+    assert before[Stage.SPLIT] == after[Stage.SPLIT]
+    assert before[Stage.BELIEF] == after[Stage.BELIEF]
+    assert before[Stage.TISSUE] != after[Stage.TISSUE]
+    assert before[Stage.PREPROCESSING] != after[Stage.PREPROCESSING]
+    assert before[Stage.PPO] != after[Stage.PPO]
+
+
+def test_tcga_native_inventory_change_invalidates_persisted_split(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "tcga-nsclc"
+    for cohort, slide_id in (
+        ("TCGA-LUAD", "TCGA-AA-0001-01Z-00-DX1.first"),
+        ("TCGA-LUSC", "TCGA-BB-0002-01Z-00-DX1.second"),
+    ):
+        images = dataset_root / cohort / "images"
+        images.mkdir(parents=True)
+        (images / f"{slide_id}.svs").touch()
+    config = AppConfig(
+        dataset=DatasetConfig(name="tcga_nsclc", root=dataset_root),
+        workspace=WorkspaceConfig(root=tmp_path / "workspace"),
+    )
+
+    before = stage_fingerprints(config)
+    added = dataset_root / "TCGA-LUAD" / "images" / "TCGA-CC-0003-01Z-00-DX1.third.svs"
+    added.touch()
+    after = stage_fingerprints(config)
+
+    assert before[Stage.SPLIT] != after[Stage.SPLIT]

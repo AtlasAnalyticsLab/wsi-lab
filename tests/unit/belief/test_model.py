@@ -4,7 +4,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from rl4xs_wsi.belief.model import (  # noqa: E402
+from wsi_lab.belief.model import (  # noqa: E402
     GatedAttentionMIL,
     append_magnification_one_hot,
     magnification_one_hot,

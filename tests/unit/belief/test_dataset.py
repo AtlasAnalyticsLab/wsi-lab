@@ -5,13 +5,13 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from rl4xs_wsi.belief.dataset import (  # noqa: E402
+from wsi_lab.belief.dataset import (  # noqa: E402
     FullBagDataset,
     PartialBagDataset,
     ValidationBagDataset,
     collate_belief_bags,
 )
-from rl4xs_wsi.belief.sampler import (  # noqa: E402
+from wsi_lab.belief.sampler import (  # noqa: E402
     PartialBagSampler,
     PartialBagSamplingConfig,
     SlideEmbeddingRecord,
@@ -80,7 +80,7 @@ def test_full_bag_dataset_contains_every_scale_instance() -> None:
 
 def test_hdf5_provider_opens_existing_embeddings_lazily(tmp_path) -> None:
     h5py = pytest.importorskip("h5py")
-    from rl4xs_wsi.belief.providers import HDF5FeatureMatrix
+    from wsi_lab.belief.providers import HDF5FeatureMatrix
 
     path = tmp_path / "embedding.h5"
     expected = np.arange(30, dtype=np.float32).reshape(10, 3)

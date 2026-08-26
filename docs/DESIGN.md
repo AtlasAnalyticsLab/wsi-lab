@@ -2,7 +2,7 @@
 
 ## System boundary
 
-The CAMELYON16 adapter owns discovery and labels. The HDF5 provider owns lazy sparse feature access. Preprocessing owns dense WSI geometry, tissue projection, and source-row mappings. The Gym environment consumes processed geometry plus RGB/embedding providers. ABMIL consumes only labels, the persisted split, and embeddings. PPO consumes the processed environment and a frozen calibrated ABMIL accumulator.
+The selected native or manifest dataset adapter owns discovery, labels, patient groups, and source-cohort metadata. The HDF5 provider owns lazy sparse feature access. Preprocessing owns dense WSI geometry, tissue projection, and source-row mappings. The Gym environment consumes processed geometry plus RGB/embedding providers. ABMIL consumes only labels, the persisted split, and embeddings. PPO consumes the processed environment and a frozen calibrated ABMIL accumulator.
 
 This separation is intentional: `train-belief` cannot trigger tissue detection, geometric preprocessing, environment construction, or PPO.
 

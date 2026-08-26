@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from rl4xs_wsi.benchmarks.environment import benchmark_environment
+from wsi_lab.benchmarks.environment import benchmark_environment
 
 
 class TinyEnvironment:

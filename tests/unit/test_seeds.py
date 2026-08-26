@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from rl4xs_wsi.utils.seeds import configure_deterministic_cuda
+from wsi_lab.utils.seeds import configure_deterministic_cuda
 
 
 def test_deterministic_cuda_workspace_default_and_validation(

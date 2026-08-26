@@ -8,30 +8,31 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from rl4xs_wsi.constants import CELL_ID_SLIDE_BLOCK_SIZE
-from rl4xs_wsi.data.base import DatasetAdapter, EmbeddingLocation, SlideRecord
-from rl4xs_wsi.data.embeddings.hdf5 import HDF5EmbeddingProvider
-from rl4xs_wsi.data.splits import DatasetSplit, SplitAssignment
-from rl4xs_wsi.errors import PreprocessingError
-from rl4xs_wsi.preprocessing.artifacts import ArtifactStore
-from rl4xs_wsi.preprocessing.pipeline import (
+from wsi_lab.constants import CELL_ID_SLIDE_BLOCK_SIZE
+from wsi_lab.data.base import DatasetAdapter, EmbeddingLocation, SlideRecord
+from wsi_lab.data.embeddings.hdf5 import HDF5EmbeddingProvider
+from wsi_lab.data.splits import DatasetSplit, SplitAssignment
+from wsi_lab.errors import PreprocessingError
+from wsi_lab.preprocessing.artifacts import ArtifactStore
+from wsi_lab.preprocessing.pipeline import (
     PreprocessingOptions,
     Preprocessor,
     ProcessedEpisodeSource,
 )
-from rl4xs_wsi.wsi.reader import PillowSlideReader
+from wsi_lab.wsi.reader import PillowSlideReader
 
 
 class MiniAdapter(DatasetAdapter):
     def __init__(self, root: Path, slide_ids: tuple[str, ...]) -> None:
         self._root = root
         self._records: dict[str, SlideRecord] = {}
-        for index, slide_id in enumerate(slide_ids):
+        for slide_id in slide_ids:
+            is_normal = slide_id.startswith("normal_")
             self._records[slide_id] = SlideRecord(
                 slide_id=slide_id,
                 slide_path=root / f"{slide_id}.png",
-                label=index,
-                label_name="normal" if index == 0 else "tumor",
+                label=0 if is_normal else 1,
+                label_name="normal" if is_normal else "tumor",
                 official_cohort=("test" if slide_id.startswith("test_") else "development"),
                 tissue_mask_path=root / f"{slide_id}_tissue.png",
             )

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from rl4xs_wsi.envs.rewards import diagnosis_reward, navigation_reward
+from wsi_lab.envs.rewards import diagnosis_reward, navigation_reward
 
 
 def test_default_rewards_are_exact() -> None:

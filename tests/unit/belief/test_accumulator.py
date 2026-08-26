@@ -4,8 +4,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from rl4xs_wsi.belief.accumulator import BeliefAccumulator  # noqa: E402
-from rl4xs_wsi.belief.model import GatedAttentionMIL  # noqa: E402
+from wsi_lab.belief.accumulator import BeliefAccumulator  # noqa: E402
+from wsi_lab.belief.model import GatedAttentionMIL  # noqa: E402
 
 
 def test_incremental_matches_full_abmil_for_every_prefix() -> None:

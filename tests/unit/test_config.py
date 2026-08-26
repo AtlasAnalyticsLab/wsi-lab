@@ -4,8 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from rl4xs_wsi.config import load_config
-from rl4xs_wsi.errors import ConfigurationError
+from wsi_lab.config import load_config
+from wsi_lab.errors import ConfigurationError
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_config_expands_environment_and_resolves_paths(tmp_path: Path, monkeypatch) -> None:
@@ -89,3 +91,30 @@ def test_config_rejects_excluded_or_escaping_embedding_sources(
     path.write_text(f"dataset:\n  root: /tmp/data\n{body}")
     with pytest.raises(ConfigurationError, match=message):
         load_config(path)
+
+
+@pytest.mark.parametrize(
+    ("filename", "environment_name", "dataset_name"),
+    (
+        ("camelyon17.example.yaml", "CAMELYON17_ROOT", "camelyon17"),
+        ("tcga_nsclc.example.yaml", "TCGA_NSCLC_ROOT", "tcga_nsclc"),
+        ("generic.example.yaml", "WSI_DATASET_ROOT", "generic"),
+    ),
+)
+def test_multi_dataset_examples_are_strict_and_portable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    environment_name: str,
+    dataset_name: str,
+) -> None:
+    dataset_root = tmp_path / dataset_name
+    dataset_root.mkdir()
+    monkeypatch.setenv(environment_name, str(dataset_root))
+
+    config = load_config(PROJECT_ROOT / "configs" / filename)
+
+    assert config.dataset.name == dataset_name
+    assert config.dataset.root == dataset_root.resolve()
+    assert config.embeddings.root == (dataset_root / "Embeddings").resolve()
+    assert not str(config.dataset.root).startswith(str(PROJECT_ROOT))

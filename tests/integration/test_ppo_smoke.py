@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import math
 
-from rl4xs_wsi.envs import make_env
-from rl4xs_wsi.rl.networks import RecurrentActorCritic
-from rl4xs_wsi.rl.recurrent_ppo import PPOConfig
-from rl4xs_wsi.rl.trainer import PPOTrainer, make_vector_env
-from rl4xs_wsi.testing.synthetic import DeterministicBelief, SyntheticEpisodeSource
+from wsi_lab.envs import make_env
+from wsi_lab.rl.networks import RecurrentActorCritic
+from wsi_lab.rl.recurrent_ppo import PPOConfig
+from wsi_lab.rl.trainer import PPOTrainer, make_vector_env
+from wsi_lab.testing.synthetic import DeterministicBelief, SyntheticEpisodeSource
 
 
 def _factory():

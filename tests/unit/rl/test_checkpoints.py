@@ -3,10 +3,10 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rl4xs_wsi.rl.checkpoints import load_ppo_checkpoint, save_ppo_checkpoint
-from rl4xs_wsi.rl.networks import RecurrentActorCritic
-from rl4xs_wsi.rl.recurrent_ppo import PPOConfig
-from rl4xs_wsi.rl.trainer import PPOTrainer
+from wsi_lab.rl.checkpoints import load_ppo_checkpoint, save_ppo_checkpoint
+from wsi_lab.rl.networks import RecurrentActorCritic
+from wsi_lab.rl.recurrent_ppo import PPOConfig
+from wsi_lab.rl.trainer import PPOTrainer
 
 
 def test_atomic_checkpoint_round_trip(tmp_path) -> None:

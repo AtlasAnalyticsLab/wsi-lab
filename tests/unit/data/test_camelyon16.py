@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from rl4xs_wsi.data.camelyon16 import Camelyon16Adapter
+from wsi_lab.data.camelyon16 import Camelyon16Adapter
 
 
 def _dataset(tmp_path: Path) -> Path:

@@ -3,9 +3,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from rl4xs_wsi.envs.actions import Action
-from rl4xs_wsi.envs.wsi_env import make_env
-from rl4xs_wsi.testing.synthetic import DeterministicBelief, SyntheticEpisodeSource
+from wsi_lab.envs.actions import Action
+from wsi_lab.envs.wsi_env import make_env
+from wsi_lab.testing.synthetic import DeterministicBelief, SyntheticEpisodeSource
 
 
 def make_test_env(**kwargs):

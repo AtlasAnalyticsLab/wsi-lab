@@ -1,8 +1,11 @@
-# RL4XS WSI
+# WSI Lab
 
-`rl4xs-wsi` is a research package for sequential examination of whole-slide images. It builds a dense six-level navigation hierarchy, attaches sparse tissue-filtered UNI v2 evidence, trains a calibrated gated-attention MIL belief model, and supplies a local recurrent-PPO implementation for `RL4XSWSI-v0`.
+`wsi-lab` is a research package for sequential examination of whole-slide images. It builds a dense six-level navigation hierarchy, attaches sparse tissue-filtered UNI v2 evidence, trains a calibrated gated-attention MIL belief model, and supplies a local recurrent-PPO implementation for `WSILab-v0`.
 
-The package currently supports CAMELYON16 and its existing AtlasPatch/UNI v2 HDF5 embeddings. PEAN is intentionally unsupported.
+The package has native-layout adapters for CAMELYON16, CAMELYON17, and
+TCGA-NSCLC (LUAD and LUSC), plus a manifest adapter for other binary WSI
+datasets. All adapters use the existing AtlasPatch/UNI v2 HDF5 schema. PEAN is
+intentionally unsupported.
 
 ## Install
 
@@ -21,38 +24,104 @@ See [the installation guide](docs/INSTALLATION.md) for verification, CPU setup, 
 
 ```bash
 export CAMELYON16_ROOT=/path/to/CAMELYON16
-rl4xs-wsi validate --config configs/camelyon16.yaml
+wsi-lab validate --config configs/camelyon16.yaml
 ```
 
 The default split preserves every `test_*` slide as official test and creates a deterministic 216/54 train/validation split over development slides (seed 1, stratified by binary label and center). Test access is guarded; evaluation defaults to validation.
 
+## Keep datasets in their native layouts
+
+Do not move, copy, rename, or manually arrange WSIs into `train/`, `val/`, and
+`test/` directories. Dataset storage and experimental split membership are
+separate. A dataset adapter reads the native files in place, normalizes slide
+metadata, and the split manager writes deterministic membership to the ignored
+`workspace/` directory.
+
+Select the matching adapter with `dataset.name`:
+
+- `camelyon16` reads `images/`, `evaluation/reference.csv`, and the dataset-level
+  `Embeddings/` directory. The labeled `test_*` cases remain the official test
+  partition; development slides are split at slide level because this layout
+  has no reliable patient identifier.
+- `camelyon17` reads `images/`, `stages.csv`, and the dataset-level
+  `Embeddings/` directory. Labeled patients are split as patient groups. Images
+  without stage rows are retained as blind official-test records and are never
+  used for training, reward computation, or metrics.
+- `tcga_nsclc` reads the native `TCGA-LUAD/` and `TCGA-LUSC/` cohorts, each with
+  its own `images/` and `Embeddings/` directories. LUAD/LUSC are class cohorts,
+  not data splits. The package generates train/validation/test membership while
+  keeping every slide from one TCGA patient in one partition.
+- `generic` reads an explicit root-relative `metadata.csv`. Use this for an
+  otherwise unsupported binary WSI dataset; it never guesses labels, patient
+  membership, cohorts, or image paths from filenames.
+
+Portable starting configurations are supplied as
+`configs/camelyon16.example.yaml`, `configs/camelyon17.example.yaml`,
+`configs/tcga_nsclc.example.yaml`, and `configs/generic.example.yaml`. Set the
+environment variable named at the top of the selected file; do not replace it
+with a personal absolute path in a configuration that will be committed.
+
+For a generic dataset, use this minimum structure:
+
+```text
+CUSTOM_DATASET/
+├── metadata.csv
+├── images/
+│   └── <slide image files>
+└── Embeddings/
+    ├── UNI_v2_2.5x_256/patches/<slide_id>.h5
+    ├── UNI_v2_5x_256/patches/<slide_id>.h5
+    ├── UNI_v2_10x_256/patches/<slide_id>.h5
+    └── UNI_v2_20x_256/patches/<slide_id>.h5
+```
+
+Its required CSV columns are:
+
+```text
+slide_id,image_path,label,label_name,patient_id,center,official_cohort
+```
+
+Every `image_path` is relative to `CUSTOM_DATASET/`; optional tissue-mask,
+tumor-mask, and annotation paths may be added in dedicated columns. Use
+`official_cohort=development`, `test`, or `test_unlabeled`. A label is `0` or
+`1` and may be blank only for `test_unlabeled`. Populate `patient_id` for every
+related slide so the generated split can prevent patient leakage.
+
+See [the data-format guide](docs/DATA_FORMAT.md) for the exact native directory
+trees, split policies, and generic `metadata.csv` contract.
+
 ## Commands
 
 ```bash
-rl4xs-wsi validate --config configs/camelyon16.yaml
-rl4xs-wsi preprocess --config configs/camelyon16.yaml
-rl4xs-wsi train-belief --config configs/camelyon16.yaml
-rl4xs-wsi eval-belief --config configs/camelyon16.yaml --split val
-rl4xs-wsi train-rl --config configs/camelyon16.yaml
-rl4xs-wsi eval-rl --config configs/camelyon16.yaml --split val
-rl4xs-wsi render-trajectory --config configs/camelyon16.yaml --trajectory trajectory.json
-rl4xs-wsi benchmark-env --config configs/camelyon16.yaml
-rl4xs-wsi smoke-test --config configs/camelyon16.yaml
+wsi-lab validate --config configs/camelyon16.yaml
+wsi-lab preprocess --config configs/camelyon16.yaml
+wsi-lab train-belief --config configs/camelyon16.yaml
+wsi-lab eval-belief --config configs/camelyon16.yaml --split val
+wsi-lab train-rl --config configs/camelyon16.yaml
+wsi-lab eval-rl --config configs/camelyon16.yaml --split val
+wsi-lab manual-play --config configs/camelyon16.yaml --split val
+wsi-lab render-trajectory --config configs/camelyon16.yaml --trajectory trajectory.json
+wsi-lab benchmark-env --config configs/camelyon16.yaml
+wsi-lab smoke-test --config configs/camelyon16.yaml
 ```
 
 The complete idempotent workflow is:
 
 ```bash
-rl4xs-wsi run --config configs/camelyon16.yaml
+wsi-lab run --config configs/camelyon16.yaml
 ```
 
 Inspect its stage decisions without writing, preprocessing, or training:
 
 ```bash
-rl4xs-wsi run --config configs/camelyon16.yaml --dry-run
+wsi-lab run --config configs/camelyon16.yaml --dry-run
 ```
 
 Each stage has a content fingerprint and completion manifest. Compatible complete work is skipped, stale artifacts are rebuilt, and compatible incomplete training checkpoints resume.
+
+Use [manual play](docs/MANUAL_PLAY.md) to control the production environment
+with the keyboard while viewing the exact actor observations, scalar values,
+action mask, and rewards.
 
 ## Core invariant
 

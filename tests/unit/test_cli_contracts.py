@@ -10,21 +10,21 @@ from typing import Any
 
 import pytest
 
-import rl4xs_wsi
-from rl4xs_wsi import cli
-from rl4xs_wsi.config.models import AppConfig, DatasetConfig, WorkspaceConfig
-from rl4xs_wsi.data.base import SlideRecord
-from rl4xs_wsi.errors import PreprocessingError, TestSplitAccessError
-from rl4xs_wsi.pipeline.planner import (
+import wsi_lab
+from wsi_lab import cli
+from wsi_lab.config.models import AppConfig, DatasetConfig, WorkspaceConfig
+from wsi_lab.data.base import SlideRecord
+from wsi_lab.errors import PreprocessingError, TestSplitAccessError
+from wsi_lab.pipeline.planner import (
     PipelinePlan,
     StagePlan,
     artifact_paths,
     stage_fingerprints,
 )
-from rl4xs_wsi.pipeline.runner import PipelineRunner
-from rl4xs_wsi.pipeline.stages import Stage, StageAction
-from rl4xs_wsi.schemas import ValidationReport
-from rl4xs_wsi.utils.atomic import atomic_json_dump
+from wsi_lab.pipeline.runner import PipelineRunner
+from wsi_lab.pipeline.stages import Stage, StageAction
+from wsi_lab.schemas import ValidationReport
+from wsi_lab.utils.atomic import atomic_json_dump
 
 
 class _FormattedPlan:
@@ -138,10 +138,21 @@ def test_belief_data_stage_passes_only_development_ids_and_disables_wsi_access(
                 feature_dimension=1536,
             )
 
-    import rl4xs_wsi.data.embeddings.hdf5 as hdf5_module
-    import rl4xs_wsi.data.validation as validation_module
+    import wsi_lab.data.embeddings.hdf5 as hdf5_module
+    import wsi_lab.data.validation as validation_module
 
     monkeypatch.setattr(cli, "_adapter", lambda _: Adapter())
+    monkeypatch.setattr(
+        cli,
+        "_load_verified_split",
+        lambda _: SimpleNamespace(
+            ids=lambda name: {
+                "train": ("normal_001",),
+                "val": ("tumor_001",),
+                "test": ("test_001",),
+            }[name]
+        ),
+    )
     monkeypatch.setattr(hdf5_module, "AtlasPatchHDF5Reader", Reader)
     monkeypatch.setattr(validation_module, "DatasetValidator", Validator)
 
@@ -205,15 +216,15 @@ def test_ppo_stage_resumes_only_for_explicit_resume_decision(
         def close(self) -> None:
             pass
 
-    _fake_module(monkeypatch, "rl4xs_wsi.rl.evaluation", evaluate_policy=object())
+    _fake_module(monkeypatch, "wsi_lab.rl.evaluation", evaluate_policy=object())
     _fake_module(
         monkeypatch,
-        "rl4xs_wsi.rl.networks",
+        "wsi_lab.rl.networks",
         RecurrentActorCritic=Model,
     )
     _fake_module(
         monkeypatch,
-        "rl4xs_wsi.rl.trainer",
+        "wsi_lab.rl.trainer",
         PPOTrainer=Trainer,
         make_vector_env=lambda factories, *, backend: (factories, backend),
     )
@@ -251,23 +262,23 @@ def test_ppo_checkpoint_load_resolves_auto_before_passing_map_location(
     model = object()
     _fake_module(
         monkeypatch,
-        "rl4xs_wsi.rl.checkpoints",
+        "wsi_lab.rl.checkpoints",
         checkpoint_candidates=lambda _: [checkpoint],
         load_ppo_checkpoint=load,
     )
     _fake_module(
         monkeypatch,
-        "rl4xs_wsi.rl.networks",
+        "wsi_lab.rl.networks",
         RecurrentActorCritic=lambda: model,
     )
     _fake_module(
         monkeypatch,
-        "rl4xs_wsi.rl.recurrent_ppo",
+        "wsi_lab.rl.recurrent_ppo",
         PPOConfig=PPOConfig,
     )
     _fake_module(
         monkeypatch,
-        "rl4xs_wsi.rl.trainer",
+        "wsi_lab.rl.trainer",
         RESUME_CONFIG_FIELDS=(),
         resolve_device=lambda requested: f"resolved:{requested}",
     )
@@ -292,18 +303,18 @@ def test_belief_evaluation_rejects_test_before_loading_records_or_checkpoint(
     torch_utils_data = _fake_module(monkeypatch, "torch.utils.data", DataLoader=object)
     torch_utils = _fake_module(monkeypatch, "torch.utils", __path__=[], data=torch_utils_data)
     _fake_module(monkeypatch, "torch", __path__=[], utils=torch_utils)
-    belief_package = _fake_module(monkeypatch, "rl4xs_wsi.belief", __path__=[])
-    monkeypatch.setattr(rl4xs_wsi, "belief", belief_package, raising=False)
+    belief_package = _fake_module(monkeypatch, "wsi_lab.belief", __path__=[])
+    monkeypatch.setattr(wsi_lab, "belief", belief_package, raising=False)
     _fake_module(
         monkeypatch,
-        "rl4xs_wsi.belief.dataset",
+        "wsi_lab.belief.dataset",
         ValidationBagDataset=object,
         collate_belief_bags=object(),
     )
-    _fake_module(monkeypatch, "rl4xs_wsi.belief.evaluation", evaluate_belief=object())
+    _fake_module(monkeypatch, "wsi_lab.belief.evaluation", evaluate_belief=object())
     _fake_module(
         monkeypatch,
-        "rl4xs_wsi.belief.trainer",
+        "wsi_lab.belief.trainer",
         load_calibrated_belief=object(),
     )
     monkeypatch.setattr(
@@ -319,9 +330,9 @@ def test_belief_evaluation_rejects_test_before_loading_records_or_checkpoint(
 def test_rl_evaluation_rejects_test_before_loading_a_ppo_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    rl_package = _fake_module(monkeypatch, "rl4xs_wsi.rl", __path__=[])
-    monkeypatch.setattr(rl4xs_wsi, "rl", rl_package, raising=False)
-    _fake_module(monkeypatch, "rl4xs_wsi.rl.evaluation", evaluate_policy=object())
+    rl_package = _fake_module(monkeypatch, "wsi_lab.rl", __path__=[])
+    monkeypatch.setattr(wsi_lab, "rl", rl_package, raising=False)
+    _fake_module(monkeypatch, "wsi_lab.rl.evaluation", evaluate_policy=object())
     monkeypatch.setattr(
         cli,
         "_load_ppo_model",
@@ -335,11 +346,11 @@ def test_rl_evaluation_rejects_test_before_loading_a_ppo_checkpoint(
 def test_authorized_rl_test_evaluation_routes_through_separate_preprocessing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    rl_package = _fake_module(monkeypatch, "rl4xs_wsi.rl", __path__=[])
-    monkeypatch.setattr(rl4xs_wsi, "rl", rl_package, raising=False)
+    rl_package = _fake_module(monkeypatch, "wsi_lab.rl", __path__=[])
+    monkeypatch.setattr(wsi_lab, "rl", rl_package, raising=False)
     _fake_module(
         monkeypatch,
-        "rl4xs_wsi.rl.evaluation",
+        "wsi_lab.rl.evaluation",
         evaluate_baseline=object(),
         evaluate_policy=object(),
     )
@@ -365,7 +376,7 @@ def test_authorized_rl_test_evaluation_routes_through_separate_preprocessing(
 def test_authorized_test_preprocessing_requires_dev_manifest_and_processes_only_test_suffix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from rl4xs_wsi.preprocessing.artifacts import ArtifactStore, SlideOffset
+    from wsi_lab.preprocessing.artifacts import ArtifactStore, SlideOffset
 
     config = _config(tmp_path)
     fingerprints = stage_fingerprints(config)
@@ -442,9 +453,9 @@ def test_authorized_test_preprocessing_requires_dev_manifest_and_processes_only_
         split_fingerprint="split-fingerprint",
         ids=lambda name: ("test_001",) if name == "test" else (),
     )
-    import rl4xs_wsi.data.embeddings.hdf5 as hdf5_module
-    import rl4xs_wsi.preprocessing.pipeline as preprocessing_module
-    import rl4xs_wsi.wsi.reader as reader_module
+    import wsi_lab.data.embeddings.hdf5 as hdf5_module
+    import wsi_lab.preprocessing.pipeline as preprocessing_module
+    import wsi_lab.wsi.reader as reader_module
 
     monkeypatch.setattr(cli, "_adapter", lambda _: Adapter())
     monkeypatch.setattr(cli, "_load_verified_split", lambda _: split)
@@ -479,16 +490,16 @@ def test_authorized_test_preprocessing_fails_closed_without_dev_manifest(
 def test_trajectory_rendering_rejects_test_before_processed_artifact_access(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    envs_package = _fake_module(monkeypatch, "rl4xs_wsi.envs", __path__=[])
-    wsi_package = _fake_module(monkeypatch, "rl4xs_wsi.wsi", __path__=[])
-    monkeypatch.setattr(rl4xs_wsi, "envs", envs_package, raising=False)
-    monkeypatch.setattr(rl4xs_wsi, "wsi", wsi_package, raising=False)
+    envs_package = _fake_module(monkeypatch, "wsi_lab.envs", __path__=[])
+    wsi_package = _fake_module(monkeypatch, "wsi_lab.wsi", __path__=[])
+    monkeypatch.setattr(wsi_lab, "envs", envs_package, raising=False)
+    monkeypatch.setattr(wsi_lab, "wsi", wsi_package, raising=False)
     _fake_module(
         monkeypatch,
-        "rl4xs_wsi.envs.rendering",
+        "wsi_lab.envs.rendering",
         render_trajectory_figure=object(),
     )
-    _fake_module(monkeypatch, "rl4xs_wsi.wsi.reader", OverviewTransform=object)
+    _fake_module(monkeypatch, "wsi_lab.wsi.reader", OverviewTransform=object)
     trajectory = tmp_path / "trajectory.json"
     trajectory.write_text(
         json.dumps({"slide_id": "test_001", "trajectory": [{"x": 0, "y": 0}]}),

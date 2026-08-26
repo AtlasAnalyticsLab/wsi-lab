@@ -3,15 +3,15 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from rl4xs_wsi.constants import CELL_ID_SLIDE_BLOCK_SIZE
-from rl4xs_wsi.data.camelyon16 import Camelyon16Adapter
-from rl4xs_wsi.data.embeddings.hdf5 import HDF5EmbeddingProvider
-from rl4xs_wsi.preprocessing.artifacts import ArtifactStore
-from rl4xs_wsi.preprocessing.geometry import GeometryBuilder
-from rl4xs_wsi.preprocessing.mapping import map_embeddings_to_grid
-from rl4xs_wsi.preprocessing.pipeline import PreprocessingOptions, Preprocessor
-from rl4xs_wsi.preprocessing.tissue import load_or_create_tissue_mask
-from rl4xs_wsi.wsi.reader import OpenSlideReader, OverviewTransform
+from wsi_lab.constants import CELL_ID_SLIDE_BLOCK_SIZE
+from wsi_lab.data.camelyon16 import Camelyon16Adapter
+from wsi_lab.data.embeddings.hdf5 import HDF5EmbeddingProvider
+from wsi_lab.preprocessing.artifacts import ArtifactStore
+from wsi_lab.preprocessing.geometry import GeometryBuilder
+from wsi_lab.preprocessing.mapping import map_embeddings_to_grid
+from wsi_lab.preprocessing.pipeline import PreprocessingOptions, Preprocessor
+from wsi_lab.preprocessing.tissue import load_or_create_tissue_mask
+from wsi_lab.wsi.reader import OpenSlideReader, OverviewTransform
 
 pytestmark = pytest.mark.real
 

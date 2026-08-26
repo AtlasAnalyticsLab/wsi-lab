@@ -10,9 +10,9 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from rl4xs_wsi.data.base import EmbeddingLocation
-from rl4xs_wsi.data.embeddings.hdf5 import AtlasPatchHDF5Reader
-from rl4xs_wsi.preprocessing.atlaspatch import (
+from wsi_lab.data.base import EmbeddingLocation
+from wsi_lab.data.embeddings.hdf5 import AtlasPatchHDF5Reader
+from wsi_lab.preprocessing.atlaspatch import (
     ATLASPATCH_MODEL_FILENAME,
     ATLASPATCH_MODEL_REPOSITORY,
     ATLASPATCH_SAM_CONFIG_FILENAME,
@@ -78,11 +78,11 @@ def test_detect_tissue_uses_exact_argv_and_records_provenance(tmp_path: Path, mo
         return subprocess.CompletedProcess(argv, 0, stdout="generated\n", stderr="diagnostic\n")
 
     monkeypatch.setattr(
-        "rl4xs_wsi.preprocessing.atlaspatch.shutil.which", lambda _: "/bin/atlaspatch"
+        "wsi_lab.preprocessing.atlaspatch.shutil.which", lambda _: "/bin/atlaspatch"
     )
-    monkeypatch.setattr("rl4xs_wsi.preprocessing.atlaspatch.subprocess.run", fake_run)
+    monkeypatch.setattr("wsi_lab.preprocessing.atlaspatch.subprocess.run", fake_run)
     monkeypatch.setattr(
-        "rl4xs_wsi.preprocessing.atlaspatch.resolve_atlaspatch_checkpoint_identity",
+        "wsi_lab.preprocessing.atlaspatch.resolve_atlaspatch_checkpoint_identity",
         lambda: {
             "repository": ATLASPATCH_MODEL_REPOSITORY,
             "filename": ATLASPATCH_MODEL_FILENAME,
@@ -94,7 +94,7 @@ def test_detect_tissue_uses_exact_argv_and_records_provenance(tmp_path: Path, mo
         },
     )
     monkeypatch.setattr(
-        "rl4xs_wsi.preprocessing.atlaspatch.installed_sam2_provenance",
+        "wsi_lab.preprocessing.atlaspatch.installed_sam2_provenance",
         lambda: {
             "distribution": "SAM-2",
             "version": "1.0",
@@ -104,7 +104,7 @@ def test_detect_tissue_uses_exact_argv_and_records_provenance(tmp_path: Path, mo
         },
     )
     monkeypatch.setattr(
-        "rl4xs_wsi.preprocessing.atlaspatch.resolve_atlaspatch_sam_config_identity",
+        "wsi_lab.preprocessing.atlaspatch.resolve_atlaspatch_sam_config_identity",
         lambda: {
             "filename": ATLASPATCH_SAM_CONFIG_FILENAME,
             "installed_path": "/site-packages/atlas_patch/configs/sam2.1_hiera_t.yaml",
@@ -203,10 +203,10 @@ def test_real_atlaspatch_detect_tissue_single_slide_in_temporary_workspace(
 ) -> None:
     """Explicit opt-in integration run; never writes into CAMELYON16."""
 
-    if os.environ.get("RL4XS_RUN_REAL_ATLASPATCH") != "1":
-        pytest.skip("set RL4XS_RUN_REAL_ATLASPATCH=1 for the bounded real AtlasPatch run")
-    from rl4xs_wsi.data.camelyon16 import Camelyon16Adapter
-    from rl4xs_wsi.data.embeddings.hdf5 import HDF5EmbeddingProvider
+    if os.environ.get("WSI_LAB_RUN_REAL_ATLASPATCH") != "1":
+        pytest.skip("set WSI_LAB_RUN_REAL_ATLASPATCH=1 for the bounded real AtlasPatch run")
+    from wsi_lab.data.camelyon16 import Camelyon16Adapter
+    from wsi_lab.data.embeddings.hdf5 import HDF5EmbeddingProvider
 
     adapter = Camelyon16Adapter(camelyon16_root)
     slide_id = "normal_031"

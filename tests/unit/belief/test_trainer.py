@@ -7,14 +7,14 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from rl4xs_wsi.belief.model import GatedAttentionMIL  # noqa: E402
-from rl4xs_wsi.belief.sampler import SlideEmbeddingRecord  # noqa: E402
-from rl4xs_wsi.belief.trainer import (  # noqa: E402
+from wsi_lab.belief.model import GatedAttentionMIL  # noqa: E402
+from wsi_lab.belief.sampler import SlideEmbeddingRecord  # noqa: E402
+from wsi_lab.belief.trainer import (  # noqa: E402
     BeliefTrainer,
     build_belief_loaders,
     load_calibrated_belief,
 )
-from rl4xs_wsi.errors import TestSplitAccessError  # noqa: E402
+from wsi_lab.errors import TestSplitAccessError  # noqa: E402
 
 
 def _slides(prefix: str, *, split: str | None = None) -> list[SlideEmbeddingRecord]:

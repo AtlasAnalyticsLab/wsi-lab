@@ -7,8 +7,8 @@ import pytest
 import tifffile
 from PIL import Image
 
-from rl4xs_wsi.errors import PreprocessingError
-from rl4xs_wsi.preprocessing.atlaspatch import (
+from wsi_lab.errors import PreprocessingError
+from wsi_lab.preprocessing.atlaspatch import (
     ATLASPATCH_MODEL_FILENAME,
     ATLASPATCH_MODEL_REPOSITORY,
     ATLASPATCH_SAM_CONFIG_FILENAME,
@@ -16,8 +16,8 @@ from rl4xs_wsi.preprocessing.atlaspatch import (
     AtlasPatchOptions,
     AtlasPatchResult,
 )
-from rl4xs_wsi.preprocessing.tissue import load_or_create_tissue_mask
-from rl4xs_wsi.wsi.reader import OverviewTransform
+from wsi_lab.preprocessing.tissue import load_or_create_tissue_mask
+from wsi_lab.wsi.reader import OverviewTransform
 
 
 def _overview(transform: OverviewTransform) -> np.ndarray:
@@ -141,7 +141,7 @@ def test_generated_mask_is_atomically_cached_with_provenance(tmp_path: Path, mon
 
     runner = FakeRunner()
     monkeypatch.setattr(
-        "rl4xs_wsi.preprocessing.tissue.resolve_atlaspatch_checkpoint_identity",
+        "wsi_lab.preprocessing.tissue.resolve_atlaspatch_checkpoint_identity",
         lambda: {
             "repository": ATLASPATCH_MODEL_REPOSITORY,
             "filename": ATLASPATCH_MODEL_FILENAME,
@@ -153,11 +153,11 @@ def test_generated_mask_is_atomically_cached_with_provenance(tmp_path: Path, mon
         },
     )
     monkeypatch.setattr(
-        "rl4xs_wsi.preprocessing.tissue.installed_sam2_provenance",
+        "wsi_lab.preprocessing.tissue.installed_sam2_provenance",
         lambda: {"pinned_commit": PINNED_SAM2_COMMIT},
     )
     monkeypatch.setattr(
-        "rl4xs_wsi.preprocessing.tissue.resolve_atlaspatch_sam_config_identity",
+        "wsi_lab.preprocessing.tissue.resolve_atlaspatch_sam_config_identity",
         lambda: {
             "filename": ATLASPATCH_SAM_CONFIG_FILENAME,
             "installed_path": "/site-packages/atlas_patch/configs/sam2.1_hiera_t.yaml",

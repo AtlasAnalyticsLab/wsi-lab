@@ -3,8 +3,8 @@ from __future__ import annotations
 import gymnasium as gym
 from gymnasium.utils.env_checker import check_env
 
-from rl4xs_wsi.envs import make_env
-from rl4xs_wsi.testing.synthetic import DeterministicBelief, SyntheticEpisodeSource
+from wsi_lab.envs import make_env
+from wsi_lab.testing.synthetic import DeterministicBelief, SyntheticEpisodeSource
 
 
 def test_environment_checker() -> None:
@@ -20,7 +20,7 @@ def test_environment_checker() -> None:
 
 def test_installed_gymnasium_environment_id_constructs() -> None:
     environment = gym.make(
-        "RL4XSWSI-v0",
+        "WSILab-v0",
         overview_size=32,
         viewport_size=32,
         max_episode_steps=12,

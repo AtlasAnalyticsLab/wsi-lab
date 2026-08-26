@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from rl4xs_wsi.rl.rollout import RecurrentRolloutBuffer, compute_gae
+from wsi_lab.rl.rollout import RecurrentRolloutBuffer, compute_gae
 
 
 def _observation(num_envs: int, value: float = 0.0) -> dict[str, torch.Tensor]:

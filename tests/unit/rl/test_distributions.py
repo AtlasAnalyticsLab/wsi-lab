@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from rl4xs_wsi.rl.distributions import MaskedCategorical, mask_logits
+from wsi_lab.rl.distributions import MaskedCategorical, mask_logits
 
 
 def test_invalid_actions_have_zero_probability_and_are_never_sampled() -> None:
