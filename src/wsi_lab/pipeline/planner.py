@@ -17,9 +17,9 @@ _ALGORITHM_VERSION = {
     Stage.BELIEF_DATA: 1,
     Stage.SPLIT: 1,
     Stage.TISSUE: 1,
-    Stage.PREPROCESSING: 2,
+    Stage.PREPROCESSING: 3,
     Stage.BELIEF: 2,
-    Stage.PPO: 1,
+    Stage.PPO: 3,
 }
 
 

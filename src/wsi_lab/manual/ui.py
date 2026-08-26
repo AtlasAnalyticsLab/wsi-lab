@@ -8,7 +8,13 @@ import numpy as np
 
 from wsi_lab.manual.controller import ACTION_KEY_BINDINGS, ManualController
 
-SCALAR_NAMES = ("magnification", "remaining budget", "ABMIL belief")
+SCALAR_NAMES = (
+    "magnification",
+    "remaining budget",
+    "ABMIL belief",
+    "tissue-ROI center x",
+    "tissue-ROI center y",
+)
 
 
 def observation_panels(
@@ -72,7 +78,7 @@ class ManualPlayWindow:
         scalar_lines = []
         for index, value in enumerate(scalars):
             name = SCALAR_NAMES[index] if index < len(SCALAR_NAMES) else f"scalar {index}"
-            scalar_lines.append(f"  {name:<18} {float(value):.6f}")
+            scalar_lines.append(f"  {name:<21} {float(value):.6f}")
         status = (
             "terminated"
             if controller.terminated
@@ -99,7 +105,9 @@ class ManualPlayWindow:
             f"Message: {controller.latest_message}\n"
             f"Evidence: {info.get('evidence_count')}  magnification: {info.get('magnification'):g}x  "
             f"belief: {float(info.get('belief', 0.0)):.6f}\n"
-            "Actor scalar observation:\n" + "\n".join(scalar_lines) + outcome
+            "Actor scalar observation (normalized; x/y use snapped tissue ROI):\n"
+            + "\n".join(scalar_lines)
+            + outcome
         )
 
     def _actions_text(self) -> str:
@@ -129,11 +137,26 @@ class ManualPlayWindow:
             raise RuntimeError("manual controller is not initialized")
         viewport, overview, composite, location, visits = observation_panels(observation)
         image_panels: tuple[tuple[Any, np.ndarray, str, dict[str, Any]], ...] = (
-            (self.viewport_axis, viewport, "Current viewport", {}),
-            (self.overview_axis, overview, "Overview RGB (global 0-2)", {}),
-            (self.composite_axis, composite, "Overview + location/visits", {}),
-            (self.location_axis, location, "Current location (global 3)", {"cmap": "Blues"}),
-            (self.visits_axis, visits, "Visited map (global 4)", {"cmap": "magma"}),
+            (self.viewport_axis, viewport, "Current viewport (global WSI cell)", {}),
+            (self.overview_axis, overview, "Tissue ROI overview RGB (global 0-2)", {}),
+            (
+                self.composite_axis,
+                composite,
+                "Tissue ROI overview + location/visits",
+                {},
+            ),
+            (
+                self.location_axis,
+                location,
+                "Tissue ROI current location (global 3)",
+                {"cmap": "Blues"},
+            ),
+            (
+                self.visits_axis,
+                visits,
+                "Tissue ROI visited map (global 4)",
+                {"cmap": "magma"},
+            ),
         )
         for axis, image, title, kwargs in image_panels:
             axis.clear()

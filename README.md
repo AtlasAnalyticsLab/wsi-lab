@@ -29,6 +29,11 @@ wsi-lab validate --config configs/camelyon16.yaml
 
 The default split preserves every `test_*` slide as official test and creates a deterministic 216/54 train/validation split over development slides (seed 1, stratified by binary label and center). Test access is guarded; evaluation defaults to validation.
 
+AtlasPatch is the default tissue-mask source. Preprocessing caches one binary
+mask per slide; tumor masks and annotations are never used to construct this
+mask or the navigation graph. Set `tissue.source` explicitly to `auto` to
+prefer a compatible dataset sidecar or to `existing` to require one.
+
 ## Keep datasets in their native layouts
 
 Do not move, copy, rename, or manually arrange WSIs into `train/`, `val/`, and
@@ -111,6 +116,19 @@ The complete idempotent workflow is:
 wsi-lab run --config configs/camelyon16.yaml
 ```
 
+`train-rl` and `run` perform one guarded official-test evaluation after the
+pipeline completes. This final evaluation is enabled by default and uses the
+best validation checkpoint. Disable it when the official test set must remain
+unopened, or while doing exploratory runs:
+
+```bash
+wsi-lab train-rl --config configs/camelyon16.yaml --no-final-test-eval
+wsi-lab run --config configs/camelyon16.yaml --no-final-test-eval
+```
+
+The explicit `--final-test-eval` form is also accepted. A dry run never starts
+the final evaluation.
+
 Inspect its stage decisions without writing, preprocessing, or training:
 
 ```bash
@@ -119,12 +137,61 @@ wsi-lab run --config configs/camelyon16.yaml --dry-run
 
 Each stage has a content fingerprint and completion manifest. Compatible complete work is skipped, stale artifacts are rebuilt, and compatible incomplete training checkpoints resume.
 
+RL outputs live under
+`workspace/runs/rl/<ppo-fingerprint>/` (or the configured workspace root):
+
+- `tensorboard/` records PPO losses, `training/episode_return`,
+  `training/episode_length`, cumulative `training/completed_episodes`, and
+  `training/learning_rate`, plus `validation/*` and final `test/*` metrics;
+- `manifest.json` records the final global step, update and completed-episode
+  counts, last PPO metrics, dependencies, and best-validation selection;
+- `validation_<global-step>.json` contains aggregate and per-slide validation
+  results together with the checkpoint-selection decision;
+- `checkpoints/best_validation.pt` is the validation winner and
+  `checkpoints/best_validation.json` is its selection record;
+- `evaluation_ppo_test.json` contains aggregate and per-slide final test
+  results, including accuracy, AUROC, sensitivity, specificity, episode
+  length/return, evidence, revisits, inspected fraction, magnification use, and
+  the resolved checkpoint provenance.
+
+Validation prefers the highest finite AUROC. Accuracy is used only until a
+finite AUROC is available, and an exact tie keeps the earlier checkpoint. If
+no validation checkpoint exists, final evaluation warns and falls back to the
+latest compatible regular checkpoint. Test results never select a checkpoint or
+feed back into training.
+
+View every run while it is training with:
+
+```bash
+tensorboard --logdir workspace/runs/rl
+```
+
 Use [manual play](docs/MANUAL_PLAY.md) to control the production environment
 with the keyboard while viewing the exact actor observations, scalar values,
 action mask, and rewards.
 
 ## Core invariant
 
-Navigation geometry covers the entire WSI rectangle, including background. Embeddings are tissue-filtered attributes on some 2.5×, 5×, 10×, and 20× cells. An embeddingless cell remains navigable and produces RGB, visits, and normal action cost; it simply contributes no diagnostic evidence. Embedding presence is never used as a tissue detector or a navigation-validity test.
+Navigation is bounded by one box enclosing the union of all tissue islands. The
+box is represented in level-0 slide coordinates and expanded outward on the
+global 0.625× grid, so every finer level retains the original slide origin and
+exact quadtree alignment. Cached `tissue_valid` maps define the navigation
+graph: pans select the nearest tissue-valid cell in the requested direction,
+possibly jumping across background, and zoom-in actions expose only
+tissue-valid children.
+
+Embeddings remain sparse attributes on some 2.5×, 5×, 10×, and 20× cells; they
+never define the tissue ROI or graph. A tissue-valid cell with no embedding is
+still navigable and produces RGB, visits, and normal action cost, but contributes
+no diagnostic evidence.
+
+That same snapped box is the spatial extent of every actor-wide observation.
+Overview RGB is cropped to it, and the current-location and visit channels are
+projected into its coordinate frame before the five-channel image is resized.
+The scalar vector is `[magnification, remaining_budget, belief, roi_x, roi_y]`,
+where x/y are the current cell center normalized between the nominal snapped
+tissue-ROI edges. The current viewport still reads the selected global WSI
+cell. Navigation IDs, global patch coordinates, and embedding lookups are never
+shifted or reinterpreted by the observation crop.
 
 The project repository has no license grant. Third-party terms are summarized in [THIRD_PARTY.md](docs/THIRD_PARTY.md).

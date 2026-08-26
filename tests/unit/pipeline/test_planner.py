@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import torch
 
 from wsi_lab.config.models import AppConfig, DatasetConfig, WorkspaceConfig
+from wsi_lab.pipeline import planner
 from wsi_lab.pipeline.planner import artifact_paths, build_plan, stage_fingerprints
 from wsi_lab.pipeline.stages import Stage, StageAction
 from wsi_lab.rl.checkpoints import save_ppo_checkpoint
@@ -29,6 +31,21 @@ def _config(tmp_path: Path) -> AppConfig:
         dataset=DatasetConfig(root=tmp_path / "dataset"),
         workspace=WorkspaceConfig(root=tmp_path / "workspace"),
     )
+
+
+def test_training_reporting_contract_invalidates_only_ppo_algorithm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    current = stage_fingerprints(config)
+
+    monkeypatch.setitem(planner._ALGORITHM_VERSION, Stage.PPO, 2)
+    legacy = stage_fingerprints(config)
+
+    assert current[Stage.PPO] != legacy[Stage.PPO]
+    for stage in Stage:
+        if stage is not Stage.PPO:
+            assert current[stage] == legacy[stage]
 
 
 def test_complete_manifest_skips_only_when_required_output_exists(tmp_path: Path) -> None:

@@ -39,6 +39,10 @@ GRID_DTYPE = np.dtype(
         ("neighbor_right", "<i8"),
         ("tissue_fraction", "<f4"),
         ("tissue_status", "u1"),
+        # Navigation validity is deliberately independent of both the legacy
+        # tissue threshold and sparse embedding availability.  It is set when
+        # any pixel in the cached binary tissue mask overlaps this cell.
+        ("tissue_valid", "u1"),
         ("embedding_index", "<i8"),
     ]
 )
@@ -74,6 +78,11 @@ class NavigationGeometry:
     level0_magnification: float
     cell_id_offset: int
     levels: Mapping[float, GridLevel]
+    # Exact union-tissue bounds reconstructed from mask-pixel outer edges.
+    tissue_bbox_level0: tuple[int, int, int, int] | None = None
+    # The same bounds expanded outward to the coarsest global grid.  Nominal
+    # right/bottom edges may exceed the WSI dimensions like edge-cell bounds.
+    navigation_roi_level0: tuple[int, int, int, int] | None = None
 
     def level(self, magnification: float) -> GridLevel:
         try:
@@ -156,6 +165,7 @@ class GeometryBuilder:
             cells["embedding_index"] = -1
             cells["tissue_fraction"] = np.nan
             cells["tissue_status"] = 0
+            cells["tissue_valid"] = 0
             local = np.arange(rows * columns, dtype=np.int64)
             row = local // columns
             column = local % columns
@@ -261,6 +271,96 @@ def validate_geometry(geometry: NavigationGeometry) -> None:
             if np.any(following.cells["parent_id"][local] != level.cells["cell_id"][valid]):
                 raise PreprocessingError(
                     f"parent/child round-trip failed for {field} at {magnification:g}x"
+                )
+
+    if geometry.navigation_roi_level0 is None and geometry.tissue_bbox_level0 is None:
+        return
+    if geometry.navigation_roi_level0 is None or geometry.tissue_bbox_level0 is None:
+        raise PreprocessingError("tissue bounds and navigation ROI must be stored together")
+    x0, y0, x1, y1 = geometry.navigation_roi_level0
+    tissue_x0, tissue_y0, tissue_x1, tissue_y1 = geometry.tissue_bbox_level0
+    coarsest = geometry.level(magnifications[0]).footprint_level0
+    if (
+        min(x0, y0) < 0
+        or x1 <= x0
+        or y1 <= y0
+        or any(value % coarsest for value in (x0, y0, x1, y1))
+        or x1 > math.ceil(geometry.level0_width / coarsest) * coarsest
+        or y1 > math.ceil(geometry.level0_height / coarsest) * coarsest
+    ):
+        raise PreprocessingError(
+            "tissue bounding box is not aligned to the coarsest global navigation grid"
+        )
+    if (
+        min(tissue_x0, tissue_y0) < 0
+        or tissue_x1 <= tissue_x0
+        or tissue_y1 <= tissue_y0
+        or tissue_x1 > geometry.level0_width
+        or tissue_y1 > geometry.level0_height
+        or tissue_x0 < x0
+        or tissue_y0 < y0
+        or tissue_x1 > x1
+        or tissue_y1 > y1
+    ):
+        raise PreprocessingError("exact tissue bounding box is invalid or outside navigation ROI")
+
+    # Once tissue topology has been attached, every directional edge must
+    # originate and terminate at tissue-valid cells on the same row/column.
+    for level_index, magnification in enumerate(magnifications):
+        level = geometry.level(magnification)
+        cells = level.cells
+        valid = cells["tissue_valid"].astype(bool)
+        if not np.any(valid):
+            raise PreprocessingError(
+                f"tissue mask produced no valid navigation cells at {magnification:g}x"
+            )
+        # Coarsest-grid snapping also aligns the ROI to every finer level, so
+        # each valid nominal quadtree footprint must be wholly enclosed.
+        enclosed_by_roi = (
+            (cells["level0_x0"] >= x0)
+            & (cells["level0_x1"] <= x1)
+            & (cells["level0_y0"] >= y0)
+            & (cells["level0_y1"] <= y1)
+        )
+        if np.any(valid & ~enclosed_by_roi):
+            raise PreprocessingError(
+                f"tissue-valid cells fall outside navigation ROI at {magnification:g}x"
+            )
+        if level_index:
+            parent = geometry.level(magnifications[level_index - 1])
+            parent_local = cells["parent_id"][valid] - parent.offset
+            if np.any(~parent.cells["tissue_valid"][parent_local].astype(bool)):
+                raise PreprocessingError(
+                    f"tissue-valid cells have non-tissue parents at {magnification:g}x"
+                )
+        for field, axis, increasing in (
+            ("neighbor_up", "column", False),
+            ("neighbor_down", "column", True),
+            ("neighbor_left", "row", False),
+            ("neighbor_right", "row", True),
+        ):
+            neighbor_ids = cells[field]
+            if np.any(neighbor_ids[~valid] != -1):
+                raise PreprocessingError(
+                    f"non-tissue cells have {field} edges at {magnification:g}x"
+                )
+            present = neighbor_ids >= 0
+            if not np.any(present):
+                continue
+            local = neighbor_ids[present] - level.offset
+            if np.any(local < 0) or np.any(local >= len(cells)):
+                raise PreprocessingError(f"invalid {field} IDs at {magnification:g}x")
+            source = cells[present]
+            target = cells[local]
+            if np.any(~target["tissue_valid"].astype(bool)) or np.any(target[axis] != source[axis]):
+                raise PreprocessingError(
+                    f"{field} does not connect aligned tissue cells at {magnification:g}x"
+                )
+            coordinate = "row" if axis == "column" else "column"
+            delta = target[coordinate] - source[coordinate]
+            if np.any(delta <= 0 if increasing else delta >= 0):
+                raise PreprocessingError(
+                    f"{field} points in the wrong direction at {magnification:g}x"
                 )
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -124,7 +125,17 @@ class SyntheticEpisodeSource:
                     )
         coarse = ids_by_level[NAVIGATION_MAGNIFICATIONS[0]]
         start = int(coarse[coarse.shape[0] // 2, coarse.shape[1] // 2])
-        return LoadedSlide(slide_id, label, overview, transform, cells, start)
+        coarse_footprint = LEVEL0_FOOTPRINTS[NAVIGATION_MAGNIFICATIONS[0]]
+        snapped_extent = math.ceil(self.level0_size / coarse_footprint) * coarse_footprint
+        return LoadedSlide(
+            slide_id=slide_id,
+            label=label,
+            overview=overview,
+            overview_transform=transform,
+            cells=cells,
+            start_cell_id=start,
+            navigation_roi_level0=(0, 0, snapped_extent, snapped_extent),
+        )
 
     def load_slide(self, slide_id: str) -> LoadedSlide:
         return self._slides[slide_id]

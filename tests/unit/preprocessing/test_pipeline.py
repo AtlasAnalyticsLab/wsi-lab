@@ -107,6 +107,10 @@ def _fixture(tmp_path: Path) -> tuple[MiniAdapter, HDF5EmbeddingProvider]:
     return adapter, HDF5EmbeddingProvider(adapter)
 
 
+def test_preprocessing_defaults_to_atlaspatch_tissue_detection() -> None:
+    assert PreprocessingOptions().tissue_source == "atlaspatch"
+
+
 def test_preprocessor_persists_global_offsets_sparse_rows_and_mpp_override(tmp_path: Path) -> None:
     adapter, provider = _fixture(tmp_path)
     store = ArtifactStore(tmp_path / "artifacts")
@@ -136,6 +140,13 @@ def test_preprocessor_persists_global_offsets_sparse_rows_and_mpp_override(tmp_p
     summary = results[0].mapping_summaries[20.0]
     assert summary.tissue_overlap_fraction is not None
     assert 0.0 <= summary.tissue_overlap_fraction <= 1.0
+    metadata = store.load_metadata("normal_001")
+    loaded_geometry = store.load_geometry("normal_001", mmap=False)
+    assert metadata["tissue_bbox_level0"] == [0, 0, 450, 400]
+    assert metadata["navigation_roi_level0"] == [0, 0, 16_384, 16_384]
+    assert loaded_geometry.tissue_bbox_level0 == (0, 0, 450, 400)
+    assert loaded_geometry.navigation_roi_level0 == (0, 0, 16_384, 16_384)
+    assert loaded_geometry.level(20).cells.dtype["tissue_valid"] == np.dtype("u1")
 
 
 def test_development_preprocessing_does_not_open_test_embeddings_and_test_extension_is_explicit(
@@ -143,7 +154,7 @@ def test_development_preprocessing_does_not_open_test_embeddings_and_test_extens
 ) -> None:
     adapter = MiniAdapter(tmp_path, ("normal_001", "test_001"))
     Image.new("RGB", (900, 400), "white").save(tmp_path / "normal_001.png")
-    Image.fromarray(np.zeros((40, 90), dtype=np.uint8)).save(tmp_path / "normal_001_tissue.png")
+    Image.fromarray(np.full((40, 90), 255, dtype=np.uint8)).save(tmp_path / "normal_001_tissue.png")
     for magnification in adapter.magnifications:
         _write_embedding(
             adapter.embedding_location("normal_001", magnification).path,
@@ -171,7 +182,7 @@ def test_development_preprocessing_does_not_open_test_embeddings_and_test_extens
     assert not adapter.embedding_location("test_001", 2.5).path.exists()
 
     Image.new("RGB", (900, 400), "white").save(tmp_path / "test_001.png")
-    Image.fromarray(np.zeros((40, 90), dtype=np.uint8)).save(tmp_path / "test_001_tissue.png")
+    Image.fromarray(np.full((40, 90), 255, dtype=np.uint8)).save(tmp_path / "test_001_tissue.png")
     for magnification in adapter.magnifications:
         _write_embedding(
             adapter.embedding_location("test_001", magnification).path,
@@ -192,7 +203,7 @@ def test_sparse_offset_allocation_skips_interleaved_unrequested_test_cohort(
     adapter = MiniAdapter(tmp_path, ("normal_001", "test_001", "tumor_001"))
     for slide_id in ("normal_001", "tumor_001"):
         Image.new("RGB", (900, 400), "white").save(tmp_path / f"{slide_id}.png")
-        Image.fromarray(np.zeros((40, 90), dtype=np.uint8)).save(
+        Image.fromarray(np.full((40, 90), 255, dtype=np.uint8)).save(
             tmp_path / f"{slide_id}_tissue.png"
         )
         for magnification in adapter.magnifications:
@@ -275,6 +286,7 @@ def test_processed_episode_source_preserves_letterbox_and_hdf5_source_row(tmp_pa
     source = ProcessedEpisodeSource(adapter, provider, PillowSlideReader(), store, split)
 
     loaded = source.load_slide("normal_001")
+    assert loaded.navigation_roi_level0 == (0, 0, 16_384, 16_384)
     assert loaded.overview_transform.content_width == 32
     assert loaded.overview_transform.content_height == 14
     assert loaded.overview_transform.content_y0 == 9
@@ -287,9 +299,15 @@ def test_processed_episode_source_preserves_letterbox_and_hdf5_source_row(tmp_pa
 
     grid = store.load_grid("normal_001", 20)
     left = loaded.cells[int(grid["cell_id"][0])]
+    assert left.tissue_valid
+    assert left.bounds == (0, 0, 512, 512)
     assert left.embedding_index == 1
     assert source.read_embedding("normal_001", left).tolist() == [20.0, 1.0]
     right = loaded.cells[int(grid["cell_id"][1])]
+    assert not right.tissue_valid
+    assert right.bounds == (512, 0, 1024, 512)
+    assert right.embedding_index == 0
+    assert source.read_embedding("normal_001", right).tolist() == [20.0, 0.0]
     viewport = source.read_viewport("normal_001", right, 32)
     assert viewport.shape == (32, 32, 3)
     assert np.all(viewport[:, -1] >= 250)  # nominal 512px cell overhang is padded white

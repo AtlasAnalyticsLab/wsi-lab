@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 
+from wsi_lab.rl.networks import SCALAR_SIZE
 from wsi_lab.rl.rollout import RecurrentRolloutBuffer, compute_gae
 
 
@@ -9,7 +10,7 @@ def _observation(num_envs: int, value: float = 0.0) -> dict[str, torch.Tensor]:
     return {
         "global": torch.full((num_envs, 5, 224, 224), value),
         "viewport": torch.full((num_envs, 3, 224, 224), value),
-        "scalars": torch.zeros(num_envs, 3),
+        "scalars": torch.zeros(num_envs, SCALAR_SIZE),
     }
 
 

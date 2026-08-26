@@ -84,6 +84,17 @@ def test_configured_runner_registers_an_implementation_for_every_stage(
     assert set(registered) == set(Stage)
 
 
+@pytest.mark.parametrize("command", ("train-rl", "run"))
+def test_rl_pipeline_commands_enable_final_test_evaluation_by_default(command: str) -> None:
+    parser = cli.build_parser()
+
+    enabled = parser.parse_args((command, "--config", "config.yaml"))
+    disabled = parser.parse_args((command, "--config", "config.yaml", "--no-final-test-eval"))
+
+    assert enabled.final_test_eval is True
+    assert disabled.final_test_eval is False
+
+
 def test_belief_data_stage_passes_only_development_ids_and_disables_wsi_access(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -211,7 +222,12 @@ def test_ppo_stage_resumes_only_for_explicit_resume_decision(
 
         def train(self, **kwargs):
             captured.update(kwargs)
-            return SimpleNamespace(global_step=8, updates=1, last_metrics=None)
+            return SimpleNamespace(
+                global_step=8,
+                updates=1,
+                last_metrics=None,
+                completed_episodes=3,
+            )
 
         def close(self) -> None:
             pass
@@ -233,6 +249,112 @@ def test_ppo_stage_resumes_only_for_explicit_resume_decision(
     cli._ppo_stage(config, tmp_path / "ppo", "fingerprint", action)
 
     assert captured["resume_latest"] is expected_resume
+
+
+@pytest.mark.parametrize(
+    ("action", "expected_resume_existing"),
+    ((StageAction.TRAIN, False), (StageAction.RESUME, True)),
+)
+def test_ppo_validation_tracks_and_records_the_best_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    action: StageAction,
+    expected_resume_existing: bool,
+) -> None:
+    config = _config(tmp_path)
+    config.logging.tensorboard = False
+    captured: dict[str, Any] = {}
+    best_record = SimpleNamespace(
+        metric_value=0.82,
+        to_dict=lambda: {"metric_name": "auroc", "metric_value": 0.82},
+    )
+    decision = SimpleNamespace(
+        improved=True,
+        best=best_record,
+        to_dict=lambda: {"improved": True, "best": best_record.to_dict()},
+    )
+
+    class Tracker:
+        def __init__(self, checkpoint_dir: Path, *, resume_existing: bool) -> None:
+            captured["checkpoint_dir"] = checkpoint_dir
+            captured["resume_existing"] = resume_existing
+            self.best = None
+
+        def consider(self, metrics, **kwargs):
+            captured["metrics"] = metrics
+            captured["consider"] = kwargs
+            self.best = best_record
+            return decision
+
+    class Model:
+        pass
+
+    class Trainer:
+        def __init__(self, _vector, model, trainer_config, **kwargs) -> None:
+            self.model = model
+            self.config = trainer_config
+            self.optimizer = object()
+            self.dependencies = kwargs["dependencies"]
+            self.global_step = 100_352
+            self.update_number = 98
+            self.device = "cpu"
+
+        def train(self, **kwargs):
+            kwargs["validation_callback"](self)
+            return SimpleNamespace(
+                global_step=self.global_step,
+                updates=self.update_number,
+                last_metrics=None,
+                completed_episodes=12,
+            )
+
+        def close(self) -> None:
+            pass
+
+    class Environment:
+        def close(self) -> None:
+            captured["environment_closed"] = True
+
+    evaluation = SimpleNamespace(
+        metrics={"accuracy": 0.75, "auroc": 0.82},
+        to_dict=lambda: {"episodes": [], "metrics": {"accuracy": 0.75, "auroc": 0.82}},
+    )
+    _fake_module(
+        monkeypatch,
+        "wsi_lab.rl.best_checkpoint",
+        BestValidationCheckpointTracker=Tracker,
+    )
+    _fake_module(
+        monkeypatch, "wsi_lab.rl.evaluation", evaluate_policy=lambda *_args, **_kw: evaluation
+    )
+    _fake_module(monkeypatch, "wsi_lab.rl.networks", RecurrentActorCritic=Model)
+    _fake_module(
+        monkeypatch,
+        "wsi_lab.rl.trainer",
+        PPOTrainer=Trainer,
+        make_vector_env=lambda factories, *, backend: (factories, backend),
+    )
+    monkeypatch.setattr(cli, "_ppo_dependencies", lambda _: {"belief": "current"})
+    monkeypatch.setattr(cli, "_make_production_environment", lambda *_args, **_kw: Environment())
+    monkeypatch.setattr(
+        cli,
+        "_load_verified_split",
+        lambda _: SimpleNamespace(ids=lambda split_name: ("slide-a", "slide-b")),
+    )
+
+    result = cli._ppo_stage(config, tmp_path / "ppo", "fingerprint", action)
+
+    assert captured["metrics"] == evaluation.metrics
+    assert captured["resume_existing"] is expected_resume_existing
+    assert captured["consider"]["global_step"] == 100_352
+    assert captured["consider"]["update"] == 98
+    assert captured["environment_closed"] is True
+    validation = json.loads(
+        (tmp_path / "ppo" / "validation_000000100352.json").read_text(encoding="utf-8")
+    )
+    assert validation["checkpoint_tracking"]["improved"] is True
+    assert result["completed_episodes"] == 12
+    assert result["best_validation"]["metric_value"] == pytest.approx(0.82)
 
 
 def test_ppo_checkpoint_load_resolves_auto_before_passing_map_location(
@@ -295,6 +417,175 @@ def test_ppo_checkpoint_load_resolves_auto_before_passing_map_location(
     assert observed_model is model
     assert observed_loaded is loaded
     assert captured["map_location"] == "resolved:auto"
+
+
+@pytest.mark.parametrize(
+    ("has_best", "expected_selection"),
+    [(True, "best_validation"), (False, "latest_final_fallback")],
+)
+def test_automatic_final_test_evaluation_prefers_best_validation_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    has_best: bool,
+    expected_selection: str,
+) -> None:
+    config = _config(tmp_path)
+    config.logging.tensorboard = False
+    run_dir = tmp_path / "run"
+    best = run_dir / "checkpoints" / "best_validation.pt"
+    if has_best:
+        best.parent.mkdir(parents=True)
+        best.touch()
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(cli, "stage_fingerprints", lambda _: {Stage.PPO: "ppo"})
+    monkeypatch.setattr(
+        cli,
+        "artifact_paths",
+        lambda *_: {Stage.PPO: run_dir / "manifest.json"},
+    )
+
+    def evaluate(*args, **kwargs):
+        captured.update(args=args, kwargs=kwargs)
+        return {"metrics": {"accuracy": 1.0}}
+
+    monkeypatch.setattr(cli, "_evaluate_rl_command", evaluate)
+
+    result = cli._automatic_final_test_evaluation(config)
+
+    assert result == {"metrics": {"accuracy": 1.0}}
+    assert captured["args"][1:] == ("test",)
+    assert captured["kwargs"]["allow_test"] is True
+    assert captured["kwargs"]["checkpoint_selection"] == expected_selection
+    assert captured["kwargs"]["checkpoint_path"] == (best.resolve() if has_best else None)
+
+
+def test_automatic_final_test_evaluation_logs_numeric_test_metrics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import torch.utils.tensorboard as tensorboard_module
+
+    config = _config(tmp_path)
+    run_dir = tmp_path / "run"
+    best = run_dir / "checkpoints" / "best_validation.pt"
+    best.parent.mkdir(parents=True)
+    best.touch()
+    captured: dict[str, Any] = {}
+
+    class Writer:
+        def __init__(self, *, log_dir: str) -> None:
+            captured["log_dir"] = log_dir
+            captured["events"] = []
+
+        def add_scalar(self, name: str, value: float, step: int) -> None:
+            captured["events"].append((name, float(value), int(step)))
+
+        def close(self) -> None:
+            captured["closed"] = True
+
+    monkeypatch.setattr(cli, "stage_fingerprints", lambda _: {Stage.PPO: "ppo"})
+    monkeypatch.setattr(
+        cli,
+        "artifact_paths",
+        lambda *_: {Stage.PPO: run_dir / "manifest.json"},
+    )
+    monkeypatch.setattr(
+        cli,
+        "_evaluate_rl_command",
+        lambda *_args, **_kwargs: {
+            "checkpoint_global_step": 1234,
+            "metrics": {
+                "accuracy": 0.75,
+                "auroc": 0.81,
+                "has_both_classes": True,
+                "magnification_usage": {"20": 9},
+            },
+        },
+    )
+    monkeypatch.setattr(tensorboard_module, "SummaryWriter", Writer)
+
+    cli._automatic_final_test_evaluation(config)
+
+    assert captured["log_dir"] == str(run_dir / "tensorboard")
+    assert captured["events"] == [
+        ("test/accuracy", 0.75, 1234),
+        ("test/auroc", 0.81, 1234),
+    ]
+    assert captured["closed"] is True
+
+
+def test_ppo_evaluation_persists_resolved_checkpoint_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import wsi_lab.rl.evaluation as evaluation_module
+
+    config = _config(tmp_path)
+    config.rl.device = "cpu"
+    run_dir = tmp_path / "run"
+    checkpoint = (run_dir / "checkpoints" / "best_validation.pt").resolve()
+    loaded = SimpleNamespace(
+        path=checkpoint,
+        global_step=100_352,
+        dependencies={"belief_fingerprint": "belief-v1"},
+        extra={
+            "best_validation": {
+                "metric_name": "auroc",
+                "metric_value": 0.82,
+                "global_step": 100_352,
+            }
+        },
+    )
+
+    class Environment:
+        def close(self) -> None:
+            pass
+
+    evaluation = SimpleNamespace(
+        to_dict=lambda: {
+            "episodes": [],
+            "metrics": {"accuracy": 0.75, "auroc": 0.82},
+        }
+    )
+    monkeypatch.setattr(cli, "_make_production_environment", lambda *_args, **_kw: Environment())
+    monkeypatch.setattr(
+        cli,
+        "_prepare_authorized_test_preprocessing",
+        lambda _: {"status": "complete"},
+    )
+    monkeypatch.setattr(
+        cli,
+        "_load_verified_split",
+        lambda _: SimpleNamespace(ids=lambda split_name: ("slide-a", "slide-b")),
+    )
+    monkeypatch.setattr(cli, "_load_ppo_model", lambda *_args, **_kw: (object(), loaded))
+    monkeypatch.setattr(evaluation_module, "evaluate_policy", lambda *_args, **_kw: evaluation)
+    monkeypatch.setattr(cli, "stage_fingerprints", lambda _: {Stage.PPO: "ppo"})
+    monkeypatch.setattr(
+        cli,
+        "artifact_paths",
+        lambda *_: {Stage.PPO: run_dir / "manifest.json"},
+    )
+
+    result = cli._evaluate_rl_command(
+        config,
+        "test",
+        allow_test=True,
+        checkpoint_path=checkpoint,
+        checkpoint_selection="best_validation",
+    )
+
+    persisted = json.loads((run_dir / "evaluation_ppo_test.json").read_text(encoding="utf-8"))
+    expected = {
+        "path": str(checkpoint),
+        "global_step": 100_352,
+        "selection": "best_validation",
+        "dependencies": {"belief_fingerprint": "belief-v1"},
+        "best_validation": loaded.extra["best_validation"],
+    }
+    assert persisted["checkpoint_path"] == str(checkpoint)
+    assert persisted["checkpoint_provenance"] == expected
+    assert result["checkpoint"] == str(checkpoint)
+    assert result["checkpoint_provenance"] == expected
 
 
 def test_belief_evaluation_rejects_test_before_loading_records_or_checkpoint(
@@ -571,6 +862,70 @@ def test_every_pipeline_command_has_an_explicit_dispatch_path(
 
     assert cli._dispatch(arguments) == 0
     assert calls == [(expected_stages, True)]
+
+
+@pytest.mark.parametrize(
+    ("extra_arguments", "expected_evaluations"),
+    [
+        ((), 1),
+        (("--final-test-eval",), 1),
+        (("--no-final-test-eval",), 0),
+    ],
+)
+def test_train_rl_runs_default_on_final_test_only_after_pipeline_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    extra_arguments: tuple[str, ...],
+    expected_evaluations: int,
+) -> None:
+    events: list[str] = []
+
+    class Runner:
+        def run(self, stages: tuple[Stage, ...], *, dry_run: bool) -> _FormattedPlan:
+            assert stages == (Stage.PPO,)
+            assert not dry_run
+            events.append("pipeline-complete")
+            return _FormattedPlan()
+
+    def evaluate(config: object) -> dict[str, object]:
+        del config
+        assert events == ["pipeline-complete"]
+        events.append("test-evaluated")
+        return {"metrics": {"accuracy": 0.75, "auroc": 0.8}}
+
+    monkeypatch.setattr(cli, "load_config", lambda _: object())
+    monkeypatch.setattr(cli, "_configured_runner", lambda _: Runner())
+    monkeypatch.setattr(cli, "_automatic_final_test_evaluation", evaluate)
+    arguments = cli.build_parser().parse_args(
+        ("train-rl", "--config", str(tmp_path / "config.yaml"), *extra_arguments)
+    )
+
+    assert cli._dispatch(arguments) == 0
+    assert events.count("test-evaluated") == expected_evaluations
+    output = capsys.readouterr().out
+    assert ("Final test evaluation:" in output) is bool(expected_evaluations)
+
+
+def test_train_rl_dry_run_never_opens_the_test_split(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Runner:
+        def run(self, stages: tuple[Stage, ...], *, dry_run: bool) -> _FormattedPlan:
+            assert stages == (Stage.PPO,)
+            assert dry_run
+            return _FormattedPlan()
+
+    monkeypatch.setattr(cli, "load_config", lambda _: object())
+    monkeypatch.setattr(cli, "_configured_runner", lambda _: Runner())
+    monkeypatch.setattr(
+        cli,
+        "_automatic_final_test_evaluation",
+        lambda _: pytest.fail("dry-run accessed the test split"),
+    )
+
+    arguments = cli.build_parser().parse_args(("train-rl", "--config", "config.yaml", "--dry-run"))
+    assert cli._dispatch(arguments) == 0
 
 
 @pytest.mark.parametrize(

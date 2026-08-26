@@ -518,6 +518,7 @@ def _ppo_stage(
 ) -> dict[str, object]:
     from torch.utils.tensorboard import SummaryWriter
 
+    from wsi_lab.rl.best_checkpoint import BestValidationCheckpointTracker
     from wsi_lab.rl.evaluation import evaluate_policy
     from wsi_lab.rl.networks import RecurrentActorCritic
     from wsi_lab.rl.trainer import PPOTrainer, make_vector_env
@@ -540,6 +541,11 @@ def _ppo_stage(
     )
     model = RecurrentActorCritic()
     dependencies = _ppo_dependencies(config)
+    checkpoint_dir = artifact_dir / "checkpoints"
+    best_tracker = BestValidationCheckpointTracker(
+        checkpoint_dir,
+        resume_existing=action is StageAction.RESUME,
+    )
     trainer = PPOTrainer(
         vector,
         model,
@@ -569,19 +575,40 @@ def _ppo_stage(
             )
         finally:
             environment.close()
+        decision = best_tracker.consider(
+            evaluation.metrics,
+            model=current.model,
+            optimizer=current.optimizer,
+            config=current.config,
+            global_step=current.global_step,
+            update=current.update_number,
+            dependencies=current.dependencies,
+        )
+        validation_result = evaluation.to_dict()
+        validation_result["checkpoint_tracking"] = decision.to_dict()
         atomic_json_dump(
             artifact_dir / f"validation_{current.global_step:012d}.json",
-            evaluation.to_dict(),
+            validation_result,
         )
         if writer is not None:
             for name, value in evaluation.metrics.items():
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     writer.add_scalar(f"validation/{name}", value, current.global_step)
+            writer.add_scalar(
+                "validation/is_best_checkpoint",
+                float(decision.improved),
+                current.global_step,
+            )
+            writer.add_scalar(
+                "validation/best_selection_value",
+                decision.best.metric_value,
+                current.global_step,
+            )
 
     started = time.monotonic()
     try:
         summary = trainer.train(
-            checkpoint_dir=artifact_dir / "checkpoints",
+            checkpoint_dir=checkpoint_dir,
             resume_latest=action is StageAction.RESUME,
             validation_callback=validate,
         )
@@ -594,11 +621,13 @@ def _ppo_stage(
         "duration_seconds": time.monotonic() - started,
         "global_step": summary.global_step,
         "updates": summary.updates,
+        "completed_episodes": summary.completed_episodes,
         "dependencies": dependencies,
         "last_metrics": summary.last_metrics.to_dict()
         if summary.last_metrics is not None
         else None,
-        "checkpoint_directory": str(artifact_dir / "checkpoints"),
+        "checkpoint_directory": str(checkpoint_dir),
+        "best_validation": best_tracker.best.to_dict() if best_tracker.best is not None else None,
     }
 
 
@@ -801,7 +830,7 @@ def _evaluate_belief_command(
     return {"output": str(output), **value}
 
 
-def _load_ppo_model(config: AppConfig):
+def _load_ppo_model(config: AppConfig, checkpoint_path: str | Path | None = None):
     from wsi_lab.rl.checkpoints import checkpoint_candidates, load_ppo_checkpoint
     from wsi_lab.rl.networks import RecurrentActorCritic
     from wsi_lab.rl.recurrent_ppo import PPOConfig
@@ -809,7 +838,11 @@ def _load_ppo_model(config: AppConfig):
 
     fingerprints = stage_fingerprints(config)
     directory = artifact_paths(config, fingerprints)[Stage.PPO].parent / "checkpoints"
-    candidates = checkpoint_candidates(directory)
+    candidates = (
+        [Path(checkpoint_path).expanduser().resolve()]
+        if checkpoint_path is not None
+        else checkpoint_candidates(directory)
+    )
     if not candidates:
         raise FileNotFoundError(f"no PPO checkpoint exists under {directory}")
     expected_config = PPOConfig.from_object(config.rl).to_dict()
@@ -842,6 +875,8 @@ def _evaluate_rl_command(
     policy_name: str = "ppo",
     fixed_budget: int = 128,
     confidence_threshold: float = 0.9,
+    checkpoint_path: str | Path | None = None,
+    checkpoint_selection: str = "latest",
 ) -> dict[str, Any]:
     _ensure_test_access(split_name, allow_test)
     from wsi_lab.rl.evaluation import evaluate_baseline, evaluate_policy
@@ -857,12 +892,20 @@ def _evaluate_rl_command(
     )
     split = _load_verified_split(config)
     checkpoint: str | None = None
+    checkpoint_global_step: int | None = None
+    checkpoint_dependencies: dict[str, str] = {}
+    checkpoint_best_validation: dict[str, Any] | None = None
     try:
         if policy_name == "ppo":
             from wsi_lab.rl.trainer import resolve_device
 
-            model, loaded = _load_ppo_model(config)
+            model, loaded = _load_ppo_model(config, checkpoint_path=checkpoint_path)
             checkpoint = str(loaded.path)
+            checkpoint_global_step = loaded.global_step
+            checkpoint_dependencies = dict(loaded.dependencies)
+            embedded_best = loaded.extra.get("best_validation")
+            if isinstance(embedded_best, Mapping):
+                checkpoint_best_validation = dict(embedded_best)
             evaluation = evaluate_policy(
                 model,
                 environment,
@@ -909,6 +952,17 @@ def _evaluate_rl_command(
         / f"evaluation_{policy_name}_{split_name}.json"
     )
     value = evaluation.to_dict()
+    if policy_name == "ppo":
+        value["checkpoint_selection"] = checkpoint_selection
+        value["checkpoint_global_step"] = checkpoint_global_step
+        value["checkpoint_path"] = checkpoint
+        value["checkpoint_provenance"] = {
+            "path": checkpoint,
+            "global_step": checkpoint_global_step,
+            "selection": checkpoint_selection,
+            "dependencies": checkpoint_dependencies,
+            "best_validation": checkpoint_best_validation,
+        }
     atomic_json_dump(output, value)
     result = {
         "output": str(output),
@@ -918,6 +972,45 @@ def _evaluate_rl_command(
     }
     if test_preprocessing is not None:
         result["test_preprocessing"] = test_preprocessing
+    return result
+
+
+def _automatic_final_test_evaluation(config: AppConfig) -> dict[str, Any]:
+    """Run the guarded final test evaluation, preferring the validation winner."""
+
+    fingerprints = stage_fingerprints(config)
+    run_dir = artifact_paths(config, fingerprints)[Stage.PPO].parent
+    best_checkpoint = run_dir / "checkpoints" / "best_validation.pt"
+    if best_checkpoint.is_file():
+        checkpoint_path: Path | None = best_checkpoint
+        selection = "best_validation"
+    else:
+        checkpoint_path = None
+        selection = "latest_final_fallback"
+        LOGGER.warning(
+            "No best-validation checkpoint exists; final test evaluation will use "
+            "the latest compatible checkpoint"
+        )
+    result = _evaluate_rl_command(
+        config,
+        "test",
+        allow_test=True,
+        checkpoint_path=checkpoint_path,
+        checkpoint_selection=selection,
+    )
+    if config.logging.tensorboard:
+        from torch.utils.tensorboard import SummaryWriter
+
+        writer = SummaryWriter(log_dir=str(run_dir / "tensorboard"))
+        try:
+            global_step = int(result.get("checkpoint_global_step") or 0)
+            metrics = result.get("metrics")
+            if isinstance(metrics, Mapping):
+                for name, value in metrics.items():
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        writer.add_scalar(f"test/{name}", value, global_step)
+        finally:
+            writer.close()
     return result
 
 
@@ -1047,6 +1140,15 @@ def build_parser() -> argparse.ArgumentParser:
         command = commands.add_parser(name)
         command.add_argument("--config", required=True, type=Path)
         command.add_argument("--dry-run", action="store_true")
+        if name in {"train-rl", "run"}:
+            command.add_argument(
+                "--final-test-eval",
+                action=argparse.BooleanOptionalAction,
+                default=True,
+                help=(
+                    "run one guarded official-test evaluation after PPO training (default: enabled)"
+                ),
+            )
     for name in ("eval-belief", "eval-rl"):
         command = commands.add_parser(name)
         command.add_argument("--config", required=True, type=Path)
@@ -1154,8 +1256,17 @@ def _dispatch(arguments: argparse.Namespace) -> int:
         )
     else:
         raise AssertionError(arguments.command)
-    plan = runner.run(stages, dry_run=bool(getattr(arguments, "dry_run", False)))
+    dry_run = bool(getattr(arguments, "dry_run", False))
+    plan = runner.run(stages, dry_run=dry_run)
     print(plan.format())
+    if (
+        arguments.command in {"train-rl", "run"}
+        and bool(getattr(arguments, "final_test_eval", True))
+        and not dry_run
+    ):
+        final_test = _automatic_final_test_evaluation(config)
+        print("Final test evaluation:")
+        print(json.dumps(final_test, indent=2))
     return 0
 
 

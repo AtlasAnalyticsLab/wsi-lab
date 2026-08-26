@@ -282,13 +282,61 @@ Exact duplicate coordinates are reported and collapse to the lowest source row o
 The embeddings contain tissue-filtered instances only. No background vectors are fabricated, and their absence cannot define tissue or geometric validity. `bench_embeddings` is not used because its backfilled hierarchy changes the sparse-evidence problem.
 
 Each per-scale preprocessing summary reports `tissue_overlapping_cells` and
-`tissue_overlap_fraction`. This comparison uses the selected validated tissue
-mask and is diagnostic only: embeddings and masks can originate from different
-AtlasPatch runs.
+`tissue_overlap_fraction`. Embeddings and masks can originate from different
+AtlasPatch runs, so this comparison remains diagnostic; navigation validity is
+derived from the mask alone and never from whether an HDF5 row exists.
 
 ## Processed grids
 
-Each scale is stored as a memory-mappable structured NumPy array with stable int64 cell identifiers, a deterministic dataset-order `slide_index`, magnification, row/column, nominal and clipped level-0 bounds, parent/four children/four neighbors, tissue fraction/status, and a nullable source HDF5 row (`-1` sentinel). Small per-slide metadata maps the numeric slide identifier to `slide_id` and records the letterbox transform and fingerprints.
+Preprocessing normalizes the selected mask to a cached binary mask for every
+slide. It finds the level-0 box enclosing the union of all nonzero tissue,
+including disconnected islands, and expands all four boundaries outward to the
+global 0.625× grid with its origin fixed at `(0, 0)`. The persisted
+`navigation_roi_level0` is `[x0, y0, x1, y1]`; a nominal maximum may extend
+beyond the WSI at its right or bottom edge. This box describes the navigation
+envelope; preprocessing retains the canonical full-slide rows and global IDs.
+It does not rebase or independently crop a level, preserving exact
+parent/child geometry and alignment with existing HDF5 coordinates.
+
+Each scale is stored as a memory-mappable structured NumPy array with stable
+int64 cell identifiers, a deterministic dataset-order `slide_index`, global
+row/column, nominal and clipped level-0 bounds, parent/four children,
+directional neighbors, tissue fraction/status, a cached `tissue_valid` flag,
+and a nullable source HDF5 row (`-1` sentinel). A directional neighbor is the
+nearest tissue-valid cell farther along the same row or column, so it can skip
+one or more background cells. A missing neighbor masks that pan direction.
+Zoom-in remains tied to the four aligned child slots, but only tissue-valid
+children are actionable. Small per-slide metadata maps the numeric slide
+identifier to `slide_id` and records the tissue ROI, mask/letterbox transforms,
+and fingerprints.
+
+`tissue_valid` means that at least one binary-mask pixel overlaps the cell; it
+is independent of `tissue.threshold`. The older thresholded `tissue_status`
+field is retained for compatibility and diagnostics.
+
+The tissue-valid graph and embedding mapping are computed independently. A
+tissue-valid cell with `embedding_index == -1` remains navigable and provides
+raw RGB; it simply adds no evidence to ABMIL. Conversely, an embedding cannot
+make a non-tissue cell navigable. Existing HDF5 origins are mapped using their
+global grid coordinates, not ROI-local coordinates.
+
+## Spatial observation frame
+
+The environment treats `navigation_roi_level0` as the common level-0 extent of
+the overview RGB, current-location channel, and scaled-visit channel. It crops
+the persisted WSI overview to this extent and projects global cell bounds and
+visit counts into the same ROI-relative raster before applying the configured
+observation resize. This remains one bounding box when tissue has multiple
+disconnected regions; empty background gaps inside the box are retained in the
+overview.
+
+The last two scalar observations are the current cell center normalized between
+the nominal ROI edges, not the full WSI edges. Mapping in either direction
+explicitly adds or removes the ROI's global level-0 origin. That observation
+transform is not an embedding transform: `embedding_index`, HDF5 coordinates,
+global cell bounds, grid origins, and quadtree IDs remain exactly as persisted.
+The separate RGB viewport is likewise read from the current cell's original
+global bounds.
 
 Dataset-global IDs reserve a fixed block of `2^40` values for each
 deterministic adapter `slide_index`; a slide's first ID is therefore

@@ -4,6 +4,7 @@ The implementation is local to :mod:`wsi_lab`; CleanRL is a design
 reference, not a runtime dependency.
 """
 
+from wsi_lab.rl.best_checkpoint import BestValidationCheckpointTracker
 from wsi_lab.rl.checkpoints import (
     find_latest_checkpoint,
     load_ppo_checkpoint,
@@ -17,6 +18,7 @@ from wsi_lab.rl.rollout import RecurrentRolloutBuffer, SequenceBatch, compute_ga
 from wsi_lab.rl.trainer import PPOTrainer, make_vector_env
 
 __all__ = [
+    "BestValidationCheckpointTracker",
     "MaskedCategorical",
     "PPOConfig",
     "PPOTrainer",

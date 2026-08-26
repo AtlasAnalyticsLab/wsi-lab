@@ -31,8 +31,8 @@ def action_mask(info: Mapping[str, Any]) -> np.ndarray:
 
 def belief(observation: Mapping[str, Any]) -> float:
     scalars = np.asarray(observation["scalars"], dtype=np.float32)
-    if scalars.shape != (3,):
-        raise ValueError("single-environment scalar observation must have shape [3]")
+    if scalars.shape != (5,):
+        raise ValueError("single-environment scalar observation must have shape [5]")
     value = float(scalars[2])
     if not 0.0 <= value <= 1.0:
         raise ValueError("belief scalar must lie in [0,1]")

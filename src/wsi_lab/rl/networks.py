@@ -16,7 +16,9 @@ GLOBAL_CHANNELS = 5
 VIEWPORT_CHANNELS = 3
 GLOBAL_SHAPE = (5, 224, 224)
 VIEWPORT_SHAPE = (3, 224, 224)
-SCALAR_SIZE = 3
+# Backward-stable observation order:
+# [magnification, remaining_budget, belief, roi_x, roi_y].
+SCALAR_SIZE = 5
 
 
 def _group_count(channels: int) -> int:

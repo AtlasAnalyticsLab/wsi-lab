@@ -1,20 +1,22 @@
 from __future__ import annotations
 
+import pytest
 import torch
 
-from wsi_lab.rl.networks import RecurrentActorCritic
+from wsi_lab.rl.networks import SCALAR_SIZE, RecurrentActorCritic
 
 
 def _observation(batch: int) -> dict[str, torch.Tensor]:
     return {
         "global": torch.randint(0, 256, (batch, 5, 32, 32), dtype=torch.uint8),
         "viewport": torch.randint(0, 256, (batch, 3, 32, 32), dtype=torch.uint8),
-        "scalars": torch.rand(batch, 3),
+        "scalars": torch.rand(batch, SCALAR_SIZE),
     }
 
 
 def test_actor_critic_shapes_and_separate_image_encoders() -> None:
     model = RecurrentActorCritic()
+    assert model.scalar_encoder[0].in_features == 5
     assert (
         model.global_encoder.stem[0].weight.data_ptr()
         != model.viewport_encoder.stem[0].weight.data_ptr()
@@ -56,7 +58,7 @@ def test_sequence_evaluation_preserves_time_and_batch_dimensions() -> None:
     observation = {
         "global": torch.zeros(2, 1, 5, 32, 32, dtype=torch.uint8),
         "viewport": torch.zeros(2, 1, 3, 32, 32, dtype=torch.uint8),
-        "scalars": torch.zeros(2, 1, 3),
+        "scalars": torch.zeros(2, 1, SCALAR_SIZE),
     }
     masks = torch.zeros(2, 1, 11, dtype=torch.bool)
     masks[..., 4] = True
@@ -70,3 +72,12 @@ def test_sequence_evaluation_preserves_time_and_batch_dimensions() -> None:
     assert result.log_prob.shape == (2, 1)
     assert result.value.shape == (2, 1)
     assert torch.allclose(result.log_prob, torch.zeros_like(result.log_prob))
+
+
+def test_actor_rejects_legacy_three_scalar_observation() -> None:
+    model = RecurrentActorCritic()
+    observation = _observation(1)
+    observation["scalars"] = torch.zeros(1, 3)
+
+    with pytest.raises(ValueError, match="exactly 5 values"):
+        model.encode(observation)

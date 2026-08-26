@@ -44,7 +44,7 @@ def test_policy_evaluation_resolves_auto_device(monkeypatch) -> None:
     observation = {
         "global": np.zeros((5, 8, 8), dtype=np.float32),
         "viewport": np.zeros((3, 8, 8), dtype=np.float32),
-        "scalars": np.asarray([0.0, 0.0, 0.25], dtype=np.float32),
+        "scalars": np.asarray([0.0, 0.0, 0.25, 0.5, 0.5], dtype=np.float32),
     }
     mask = np.zeros(11, dtype=np.bool_)
     mask[9] = True

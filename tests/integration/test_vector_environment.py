@@ -39,5 +39,5 @@ def test_async_vector_environment_smoke() -> None:
         [_factory, _factory], autoreset_mode=gym.vector.AutoresetMode.SAME_STEP
     )
     observation, _ = vector.reset(seed=1)
-    assert observation["scalars"].shape == (2, 3)
+    assert observation["scalars"].shape == (2, 5)
     vector.close()

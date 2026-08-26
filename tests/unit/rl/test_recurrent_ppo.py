@@ -4,7 +4,7 @@ import math
 
 import torch
 
-from wsi_lab.rl.networks import RecurrentActorCritic
+from wsi_lab.rl.networks import SCALAR_SIZE, RecurrentActorCritic
 from wsi_lab.rl.recurrent_ppo import PPOConfig, ppo_update
 from wsi_lab.rl.rollout import RecurrentRolloutBuffer
 
@@ -34,7 +34,7 @@ def test_one_synthetic_recurrent_ppo_optimizer_step() -> None:
         observation = {
             "global": torch.randint(0, 256, (2, 5, 32, 32), dtype=torch.uint8),
             "viewport": torch.randint(0, 256, (2, 3, 32, 32), dtype=torch.uint8),
-            "scalars": torch.rand(2, 3),
+            "scalars": torch.rand(2, SCALAR_SIZE),
         }
         masks = torch.zeros(2, 11, dtype=torch.bool)
         masks[:, [step % 9, 9, 10]] = True

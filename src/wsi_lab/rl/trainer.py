@@ -166,27 +166,24 @@ def extract_final_observation(infos: Any, index: int) -> Mapping[str, Any] | Non
     return None
 
 
-def _final_infos(infos: Any, done: np.ndarray) -> list[Mapping[str, Any]]:
-    results: list[Mapping[str, Any]] = []
+def _final_info_at(infos: Any, index: int) -> Mapping[str, Any] | None:
+    """Return one terminal info across Gymnasium vector-info formats."""
+
     if isinstance(infos, Sequence) and not isinstance(infos, (str, bytes, Mapping)):
-        for index, flag in enumerate(done):
-            if not flag:
-                continue
-            info = infos[index]
-            if isinstance(info, Mapping):
-                final = info.get("final_info", info)
-                if isinstance(final, Mapping):
-                    results.append(final)
-        return results
-    if isinstance(infos, Mapping) and "final_info" in infos:
-        values = infos["final_info"]
-        presence = np.asarray(infos.get("_final_info", done), dtype=np.bool_)
-        for index, flag in enumerate(presence):
-            if flag:
-                value = _object_at(values, index)
-                if isinstance(value, Mapping):
-                    results.append(value)
-    return results
+        if index >= len(infos):
+            return None
+        info = infos[index]
+        if not isinstance(info, Mapping):
+            return None
+        final = info.get("final_info", info)
+        return final if isinstance(final, Mapping) else None
+    if not isinstance(infos, Mapping) or "final_info" not in infos:
+        return None
+    presence = infos.get("_final_info")
+    if presence is not None and not bool(np.asarray(presence, dtype=np.bool_)[index]):
+        return None
+    value = _object_at(infos["final_info"], index)
+    return value if isinstance(value, Mapping) else None
 
 
 def _single_observation_batch(observation: Mapping[str, Any]) -> dict[str, Any]:
@@ -208,6 +205,7 @@ class TrainingSummary:
     global_step: int
     updates: int
     last_metrics: PPOUpdateMetrics | None
+    completed_episodes: int = 0
 
 
 class PPOTrainer:
@@ -250,6 +248,9 @@ class PPOTrainer:
         self._episode_starts: Tensor | None = None
         self._global_shape: tuple[int, int, int] | None = None
         self._viewport_shape: tuple[int, int, int] | None = None
+        self._running_episode_returns = np.zeros(self.config.num_envs, dtype=np.float64)
+        self._running_episode_lengths = np.zeros(self.config.num_envs, dtype=np.int64)
+        self._completed_episode_count = 0
         observation_space = getattr(vector_env, "single_observation_space", None)
         if observation_space is not None:
             try:
@@ -287,6 +288,40 @@ class PPOTrainer:
         self._hidden_state = self.model.initial_state(self.config.num_envs, device=self.device)
         self._episode_starts = torch.ones(
             self.config.num_envs, dtype=torch.bool, device=self.device
+        )
+        # A vector reset starts entirely new episodes.  In particular this
+        # prevents partial pre-checkpoint rewards from being attributed to the
+        # fresh worker episodes created after resume.
+        self._running_episode_returns.fill(0.0)
+        self._running_episode_lengths.fill(0)
+
+    @property
+    def completed_episode_count(self) -> int:
+        """Number of training episodes completed, including restored history."""
+
+        return self._completed_episode_count
+
+    def _record_rollout_telemetry(self, completed_episodes: Sequence[Mapping[str, Any]]) -> None:
+        if self.writer is None:
+            return
+        for episode in completed_episodes:
+            completion_step = int(episode["completion_global_step"])
+            self.writer.add_scalar(
+                "training/episode_return",
+                float(episode["episode_return"]),
+                completion_step,
+            )
+            self.writer.add_scalar(
+                "training/episode_length",
+                int(episode["episode_length"]),
+                completion_step,
+            )
+        # Emit this on every rollout, including rollouts with no termination,
+        # so dashboards show a well-defined zero/plateau rather than no data.
+        self.writer.add_scalar(
+            "training/completed_episodes",
+            self._completed_episode_count,
+            self.global_step,
         )
 
     def _require_state(self) -> tuple[dict[str, Tensor], Tensor, Tensor, Tensor]:
@@ -371,7 +406,33 @@ class PPOTrainer:
                 truncation_values=truncation_values,
             )
             done_np = np.logical_or(terminated_np, truncated_np)
-            completed.extend(_final_infos(infos, np.asarray(done_np, dtype=np.bool_)))
+            rewards_array = np.asarray(rewards_np, dtype=np.float64)
+            if rewards_array.shape != (self.config.num_envs,):
+                raise ValueError(
+                    "vector rewards must have shape "
+                    f"[{self.config.num_envs}], got {rewards_array.shape}"
+                )
+            self._running_episode_returns += rewards_array
+            self._running_episode_lengths += 1
+            completion_step = self.global_step + self.config.num_envs
+            for index in np.flatnonzero(done_np):
+                environment_index = int(index)
+                self._completed_episode_count += 1
+                final_info = _final_info_at(infos, environment_index)
+                episode = dict(final_info or {})
+                # Trainer-owned values are authoritative.  WSIEnv exposes the
+                # action count but Gym's final info does not supply a return.
+                episode.update(
+                    {
+                        "episode_return": float(self._running_episode_returns[environment_index]),
+                        "episode_length": int(self._running_episode_lengths[environment_index]),
+                        "completed_episode_count": self._completed_episode_count,
+                        "completion_global_step": completion_step,
+                    }
+                )
+                completed.append(episode)
+                self._running_episode_returns[environment_index] = 0.0
+                self._running_episode_lengths[environment_index] = 0
             self.global_step += self.config.num_envs
             observation = pack_observation(next_observation_raw)
             action_masks = torch.as_tensor(
@@ -398,7 +459,9 @@ class PPOTrainer:
         self._action_masks = action_masks
         self._hidden_state = hidden_state
         self._episode_starts = episode_starts
-        return RolloutCollection(buffer=buffer, completed_episodes=tuple(completed))
+        collection = RolloutCollection(buffer=buffer, completed_episodes=tuple(completed))
+        self._record_rollout_telemetry(collection.completed_episodes)
+        return collection
 
     def update(self, rollout: RecurrentRolloutBuffer) -> PPOUpdateMetrics:
         metrics = ppo_update(self.model, self.optimizer, rollout, self.config)
@@ -407,6 +470,11 @@ class PPOTrainer:
             for name, value in metrics.to_dict().items():
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     self.writer.add_scalar(f"ppo/{name}", value, self.global_step)
+            self.writer.add_scalar(
+                "training/learning_rate",
+                float(self.optimizer.param_groups[0]["lr"]),
+                self.global_step,
+            )
         return metrics
 
     def resume(self, checkpoint: str | Path, *, restore_rng: bool = True) -> None:
@@ -429,6 +497,19 @@ class PPOTrainer:
         )
         self.global_step = loaded.global_step
         self.update_number = loaded.update
+        completed_episode_count = loaded.extra.get("completed_episode_count", 0)
+        if (
+            isinstance(completed_episode_count, bool)
+            or not isinstance(completed_episode_count, (int, np.integer))
+            or int(completed_episode_count) < 0
+        ):
+            raise ValueError(
+                "PPO checkpoint has invalid non-negative completed_episode_count="
+                f"{completed_episode_count!r}"
+            )
+        self._completed_episode_count = int(completed_episode_count)
+        self._running_episode_returns.fill(0.0)
+        self._running_episode_lengths.fill(0)
         self._observation = None
         self._action_masks = None
         self._hidden_state = None
@@ -499,6 +580,7 @@ class PPOTrainer:
                     global_step=self.global_step,
                     update=self.update_number,
                     dependencies=self.dependencies,
+                    extra={"completed_episode_count": self._completed_episode_count},
                 )
                 while next_checkpoint <= self.global_step:
                     next_checkpoint += self.config.checkpoint_interval
@@ -512,12 +594,16 @@ class PPOTrainer:
                 global_step=self.global_step,
                 update=self.update_number,
                 dependencies=self.dependencies,
-                extra={"final": True},
+                extra={
+                    "final": True,
+                    "completed_episode_count": self._completed_episode_count,
+                },
             )
         return TrainingSummary(
             global_step=self.global_step,
             updates=self.update_number,
             last_metrics=last_metrics,
+            completed_episodes=self._completed_episode_count,
         )
 
     def close(self) -> None:

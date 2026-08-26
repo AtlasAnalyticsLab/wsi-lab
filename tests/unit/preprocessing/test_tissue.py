@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -46,6 +47,41 @@ def test_existing_binary_mask_is_read_only_and_letterboxed(tmp_path: Path) -> No
     assert not mask.values[: transform.content_y0].any()
     assert mask.source == "existing"
     assert source.read_bytes() == before
+
+
+def test_existing_mask_is_normalized_into_workspace_cache(tmp_path: Path) -> None:
+    slide = tmp_path / "slide.png"
+    Image.new("RGB", (80, 40), "white").save(slide)
+    source = tmp_path / "slide_tissue.png"
+    native = np.zeros((20, 40), dtype=np.uint8)
+    native[5:15, 10:30] = 255
+    Image.fromarray(native).save(source)
+    source_before = source.read_bytes()
+    transform = OverviewTransform.fit((80, 40), (32, 32))
+    cached = tmp_path / "workspace" / "masks" / "slide.npy"
+
+    mask = load_or_create_tissue_mask(
+        slide,
+        _overview(transform),
+        transform,
+        existing_path=source,
+        generated_path=cached,
+        source="existing",
+    )
+
+    cached_values = np.load(cached, allow_pickle=False)
+    manifest = json.loads(cached.with_name("slide.npy.manifest.json").read_text(encoding="utf-8"))
+    assert cached_values.dtype == np.bool_
+    assert cached_values.shape == (32, 32)
+    assert np.array_equal(cached_values, mask.values)
+    assert not cached_values[: transform.content_y0].any()
+    assert mask.source == "existing"
+    assert mask.source_path == source.resolve()
+    assert source.read_bytes() == source_before
+    assert manifest["status"] == "complete"
+    assert manifest["cache_kind"] == "normalized-existing"
+    assert manifest["source_path"] == str(source.resolve())
+    assert manifest["normalized_mask"]["dtype"] == "bool"
 
 
 def test_existing_multiclass_mask_is_rejected_not_thresholded(tmp_path: Path) -> None:

@@ -43,7 +43,7 @@ from wsi_lab.wsi.reader import OpenSlideReader, OverviewTransform, SlideMetadata
 class PreprocessingOptions:
     overview_size: int = 224
     mapping_tolerance: int = 0
-    tissue_source: str = "auto"
+    tissue_source: str = "atlaspatch"
     tissue_threshold: float = 0.01
     tissue_rebuild: bool = False
     strict_mapping: bool = True
@@ -280,7 +280,9 @@ class Preprocessor:
     ) -> str:
         return fingerprint(
             {
-                "schema": 1,
+                # Topology v2 adds tissue-valid navigation and snapped ROI
+                # metadata.  Existing dense-grid artifacts must be rebuilt.
+                "schema": 2,
                 "slide_id": slide_id,
                 "wsi": file_fingerprint(slide_path),
                 "embeddings": {
@@ -612,6 +614,7 @@ class NavigationCellMapping(Mapping[int, Any]):
             ),
             tissue_fraction=tissue_fraction,
             embedding_index=int(cell["embedding_index"]),
+            tissue_valid=bool(cell["tissue_valid"]),
         )
 
 
@@ -686,6 +689,7 @@ class ProcessedEpisodeSource:
                 for magnification in NAVIGATION_MAGNIFICATIONS
             )
             self._loaded_cells[slide_id] = NavigationCellMapping(arrays)
+        navigation_roi = metadata["navigation_roi_level0"]
         return LoadedSlide(
             slide_id=slide_id,
             label=int(assignment.label),
@@ -693,6 +697,12 @@ class ProcessedEpisodeSource:
             overview_transform=persisted,
             cells=self._loaded_cells[slide_id],
             start_cell_id=int(metadata["start_cell_id"]),
+            navigation_roi_level0=(
+                int(navigation_roi[0]),
+                int(navigation_roi[1]),
+                int(navigation_roi[2]),
+                int(navigation_roi[3]),
+            ),
         )
 
     def read_viewport(self, slide_id: str, cell: Any, output_size: int) -> np.ndarray:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import tempfile
 from collections.abc import Mapping
@@ -30,7 +31,7 @@ from wsi_lab.preprocessing.atlaspatch import (
     resolve_atlaspatch_sam_config_identity,
     sha256_file,
 )
-from wsi_lab.preprocessing.geometry import GridLevel, NavigationGeometry
+from wsi_lab.preprocessing.geometry import GridLevel, NavigationGeometry, validate_geometry
 from wsi_lab.utils.atomic import atomic_json_dump
 from wsi_lab.utils.fingerprints import file_fingerprint, fingerprint
 from wsi_lab.wsi.reader import OverviewTransform
@@ -251,6 +252,72 @@ def _generated_manifest_path(mask_path: Path) -> Path:
     return mask_path.with_name(f"{mask_path.name}.manifest.json")
 
 
+def _cache_normalized_existing_mask(
+    path: Path,
+    values: NDArray[np.bool_],
+    *,
+    slide_path: Path,
+    source_path: Path,
+    source_page: int | None,
+    transform: OverviewTransform,
+    provenance: Mapping[str, Any],
+) -> None:
+    """Atomically publish a normalized copy while leaving dataset data read-only."""
+
+    if path == source_path:
+        raise PreprocessingError(
+            "normalized tissue cache path must differ from the existing source mask"
+        )
+    manifest_path = _generated_manifest_path(path)
+    source_identity = file_fingerprint(source_path)
+    cache_identity = fingerprint(
+        {
+            "schema_version": 2,
+            "slide": file_fingerprint(slide_path),
+            "source": source_identity,
+            "source_page": source_page,
+            "overview_transform": transform.to_dict(),
+        }
+    )
+    atomic_json_dump(
+        manifest_path,
+        {
+            "schema_version": 2,
+            "artifact_type": "tissue_mask",
+            "cache_kind": "normalized-existing",
+            "status": "incomplete",
+            "fingerprint": cache_identity,
+            "slide_id": slide_path.stem,
+        },
+    )
+    _atomic_save_npy(path, np.asarray(values, dtype=np.bool_))
+    atomic_json_dump(
+        manifest_path,
+        {
+            "schema_version": 2,
+            "artifact_type": "tissue_mask",
+            "cache_kind": "normalized-existing",
+            "status": "complete",
+            "fingerprint": cache_identity,
+            "created_at": datetime.now(UTC).isoformat(),
+            "slide_id": slide_path.stem,
+            "mask_path": str(path),
+            "source": "existing",
+            "source_path": str(source_path),
+            "source_page": source_page,
+            "source_fingerprint": source_identity,
+            "overview_transform": transform.to_dict(),
+            "normalized_mask": {
+                "shape": list(values.shape),
+                "dtype": str(values.dtype),
+                "size": path.stat().st_size,
+                "sha256": sha256_file(path),
+            },
+            "provenance": dict(provenance),
+        },
+    )
+
+
 def _cache_fingerprint(
     slide_path: Path,
     transform: OverviewTransform,
@@ -451,7 +518,7 @@ def load_or_create_tissue_mask(
     *,
     existing_path: str | Path | None = None,
     generated_path: str | Path | None = None,
-    source: TissueSource | Any = "auto",
+    source: TissueSource | Any = "atlaspatch",
     threshold: float = 0.01,
     rebuild: bool = False,
     atlaspatch_options: AtlasPatchOptions | Mapping[str, Any] | None = None,
@@ -460,9 +527,9 @@ def load_or_create_tissue_mask(
 ) -> TissueMask:
     """Reuse a verified mask or generate one through the AtlasPatch CLI.
 
-    Existing dataset masks are read-only. Generated masks are normalized to
-    the overview canvas and atomically published to ``generated_path`` with a
-    provenance manifest written last.
+    Existing dataset masks remain read-only. Every selected mask is normalized
+    to the overview canvas and, when ``generated_path`` is supplied, atomically
+    published there with a provenance manifest written last.
     """
 
     source_name = str(getattr(source, "value", source)).casefold()
@@ -482,6 +549,7 @@ def load_or_create_tissue_mask(
     if not slide.is_file():
         raise FileNotFoundError(slide)
     existing = Path(existing_path).expanduser().resolve() if existing_path is not None else None
+    generated = Path(generated_path).expanduser().resolve() if generated_path is not None else None
     if source_name in {"auto", "existing"} and not rebuild:
         if existing is not None and existing.is_file():
             try:
@@ -494,19 +562,31 @@ def load_or_create_tissue_mask(
                     exc_info=True,
                 )
             else:
+                normalized = _place_content_mask(native, transform)
+                existing_provenance = {
+                    "source": file_fingerprint(existing),
+                    "source_page": page,
+                    "binary_validation": "passed",
+                    "alignment": details,
+                    "overview_transform": transform.to_dict(),
+                }
+                if generated is not None:
+                    _cache_normalized_existing_mask(
+                        generated,
+                        normalized,
+                        slide_path=slide,
+                        source_path=existing,
+                        source_page=page,
+                        transform=transform,
+                        provenance=existing_provenance,
+                    )
                 return TissueMask(
-                    values=_place_content_mask(native, transform),
+                    values=normalized,
                     source="existing",
                     threshold=threshold,
                     source_path=existing,
                     source_page=page,
-                    provenance={
-                        "source": file_fingerprint(existing),
-                        "source_page": page,
-                        "binary_validation": "passed",
-                        "alignment": details,
-                        "overview_transform": transform.to_dict(),
-                    },
+                    provenance=existing_provenance,
                 )
         elif source_name == "existing":
             raise PreprocessingError(
@@ -526,7 +606,6 @@ def load_or_create_tissue_mask(
         else:
             options = AtlasPatchOptions(**dict(atlaspatch_options))
         runner = AtlasPatchRunner(options)
-    generated = Path(generated_path).expanduser().resolve() if generated_path is not None else None
     if generated is None:
         raise PreprocessingError(
             "AtlasPatch tissue generation requires generated_path so the normalized mask and provenance can be cached"
@@ -606,11 +685,11 @@ def load_or_create_tissue_mask(
     )
 
 
-def tissue_fractions(
+def _tissue_sums_and_areas(
     level: GridLevel,
     mask: TissueMask,
     transform: OverviewTransform,
-) -> NDArray[np.float32]:
+) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
     values = mask.values.astype(np.int64, copy=False)
     integral = np.pad(values.cumsum(axis=0).cumsum(axis=1), ((1, 0), (1, 0)))
     cells = level.cells
@@ -626,7 +705,113 @@ def tissue_fractions(
     y1 = np.maximum(y1, y0 + 1)
     sums = integral[y1, x1] - integral[y0, x1] - integral[y1, x0] + integral[y0, x0]
     area = (x1 - x0) * (y1 - y0)
+    return sums.astype(np.int64, copy=False), area.astype(np.int64, copy=False)
+
+
+def tissue_fractions(
+    level: GridLevel,
+    mask: TissueMask,
+    transform: OverviewTransform,
+) -> NDArray[np.float32]:
+    sums, area = _tissue_sums_and_areas(level, mask, transform)
     return (sums / area).astype(np.float32)
+
+
+def tissue_bbox_level0(
+    mask: TissueMask,
+    transform: OverviewTransform,
+) -> tuple[int, int, int, int]:
+    """Return the exact union-tissue box in canonical level-0 coordinates.
+
+    Mask pixels represent rectangles in the shared overview frame.  Their
+    outer edges are mapped back to level-0 coordinates, so disconnected tissue
+    islands are enclosed by one box.
+    """
+
+    values = np.asarray(mask.values, dtype=np.bool_)
+    content_x1 = transform.content_x0 + transform.content_width
+    content_y1 = transform.content_y0 + transform.content_height
+    content = values[
+        transform.content_y0 : content_y1,
+        transform.content_x0 : content_x1,
+    ]
+    positions = np.argwhere(content)
+    if not len(positions):
+        raise PreprocessingError(
+            "tissue mask contains no tissue pixels in the WSI overview content"
+        )
+
+    mask_y0, mask_x0 = positions.min(axis=0)
+    mask_y1, mask_x1 = positions.max(axis=0) + 1
+    raw_x0 = max(0, math.floor(float(mask_x0) / transform.scale_x))
+    raw_y0 = max(0, math.floor(float(mask_y0) / transform.scale_y))
+    raw_x1 = min(
+        transform.source_width,
+        math.ceil(float(mask_x1) / transform.scale_x),
+    )
+    raw_y1 = min(
+        transform.source_height,
+        math.ceil(float(mask_y1) / transform.scale_y),
+    )
+    return (
+        raw_x0,
+        raw_y0,
+        raw_x1,
+        raw_y1,
+    )
+
+
+def navigation_roi_level0(
+    mask: TissueMask,
+    transform: OverviewTransform,
+    *,
+    grid_footprint_level0: int,
+) -> tuple[int, int, int, int]:
+    """Expand the exact tissue bounds outward to the canonical global grid."""
+
+    if grid_footprint_level0 <= 0:
+        raise ValueError("grid footprint must be positive")
+    x0, y0, x1, y1 = tissue_bbox_level0(mask, transform)
+    footprint = int(grid_footprint_level0)
+    return (
+        (x0 // footprint) * footprint,
+        (y0 // footprint) * footprint,
+        math.ceil(x1 / footprint) * footprint,
+        math.ceil(y1 / footprint) * footprint,
+    )
+
+
+def _attach_directional_tissue_neighbors(cells: np.ndarray, rows: int, columns: int) -> None:
+    """Connect each valid source to the next valid cell along its grid axis."""
+
+    for neighbor_field in (
+        "neighbor_up",
+        "neighbor_down",
+        "neighbor_left",
+        "neighbor_right",
+    ):
+        cells[neighbor_field] = -1
+    valid = cells["tissue_valid"].reshape(rows, columns).astype(bool, copy=False)
+    ids = cells["cell_id"].reshape(rows, columns)
+
+    # Iterating over axes rather than individual cells keeps preprocessing
+    # linear while avoiding several full-grid int64 scratch arrays.
+    for row in range(rows):
+        columns_with_tissue = np.flatnonzero(valid[row])
+        if len(columns_with_tissue) < 2:
+            continue
+        row_ids = ids[row, columns_with_tissue]
+        local = row * columns + columns_with_tissue
+        cells["neighbor_left"][local[1:]] = row_ids[:-1]
+        cells["neighbor_right"][local[:-1]] = row_ids[1:]
+    for column in range(columns):
+        rows_with_tissue = np.flatnonzero(valid[:, column])
+        if len(rows_with_tissue) < 2:
+            continue
+        column_ids = ids[rows_with_tissue, column]
+        local = rows_with_tissue * columns + column
+        cells["neighbor_up"][local[1:]] = column_ids[:-1]
+        cells["neighbor_down"][local[:-1]] = column_ids[1:]
 
 
 def apply_tissue_to_geometry(
@@ -634,14 +819,42 @@ def apply_tissue_to_geometry(
     mask: TissueMask,
     transform: OverviewTransform,
 ) -> NavigationGeometry:
+    if (
+        transform.source_width != geometry.level0_width
+        or transform.source_height != geometry.level0_height
+    ):
+        raise PreprocessingError("overview transform dimensions do not match navigation geometry")
+    expected_mask_shape = (transform.canvas_height, transform.canvas_width)
+    if mask.values.shape != expected_mask_shape:
+        raise PreprocessingError(
+            f"tissue mask shape {mask.values.shape} does not match overview canvas "
+            f"{expected_mask_shape}"
+        )
+    coarsest = geometry.level(geometry.magnifications[0]).footprint_level0
+    tissue_bbox = tissue_bbox_level0(mask, transform)
+    roi = navigation_roi_level0(
+        mask,
+        transform,
+        grid_footprint_level0=coarsest,
+    )
     levels: dict[float, GridLevel] = {}
     for magnification, level in geometry.levels.items():
         cells = level.cells.copy()
-        fractions = tissue_fractions(level, mask, transform)
+        sums, areas = _tissue_sums_and_areas(level, mask, transform)
+        fractions = (sums / areas).astype(np.float32)
         cells["tissue_fraction"] = fractions
         cells["tissue_status"] = fractions >= mask.threshold
+        cells["tissue_valid"] = sums > 0
+        _attach_directional_tissue_neighbors(cells, level.rows, level.columns)
         levels[magnification] = replace(level, cells=cells)
-    return replace(geometry, levels=levels)
+    result = replace(
+        geometry,
+        levels=levels,
+        tissue_bbox_level0=tissue_bbox,
+        navigation_roi_level0=roi,
+    )
+    validate_geometry(result)
+    return result
 
 
 def choose_start_cell(geometry: NavigationGeometry) -> int:
@@ -654,11 +867,11 @@ def choose_start_cell(geometry: NavigationGeometry) -> int:
     cell_center_y = (level.cells["level0_y0"] + level.cells["clipped_y1"]) / 2
     distance = (cell_center_x - center_x) ** 2 + (cell_center_y - center_y) ** 2
     central = int(np.argmin(distance))
-    if bool(level.cells["tissue_status"][central]):
+    if bool(level.cells["tissue_valid"][central]):
         return int(level.cells["cell_id"][central])
-    tissue = np.flatnonzero(level.cells["tissue_status"])
+    tissue = np.flatnonzero(level.cells["tissue_valid"])
     if not len(tissue):
-        return int(level.cells["cell_id"][central])
+        raise PreprocessingError("navigation geometry has no tissue-valid starting cell")
     nearest = int(tissue[np.argmin(distance[tissue])])
     return int(level.cells["cell_id"][nearest])
 
@@ -669,5 +882,7 @@ __all__ = [
     "atlaspatch_available",
     "choose_start_cell",
     "load_or_create_tissue_mask",
+    "navigation_roi_level0",
+    "tissue_bbox_level0",
     "tissue_fractions",
 ]

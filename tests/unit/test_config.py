@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from wsi_lab.config import load_config
+from wsi_lab.config.models import TissueSource
 from wsi_lab.errors import ConfigurationError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -27,6 +28,25 @@ def test_config_rejects_unknown_fields(tmp_path: Path) -> None:
     path.write_text("dataset:\n  root: /tmp/data\n  surprise: true\n")
     with pytest.raises(ConfigurationError, match="surprise"):
         load_config(path)
+
+
+def test_config_defaults_to_atlaspatch_tissue_source(tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text("dataset:\n  root: /tmp/data\n")
+
+    config = load_config(path)
+
+    assert config.tissue.source is TissueSource.ATLASPATCH
+
+
+@pytest.mark.parametrize("source", tuple(TissueSource))
+def test_config_accepts_each_tissue_source(tmp_path: Path, source: TissueSource) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(f"dataset:\n  root: /tmp/data\ntissue:\n  source: {source.value}\n")
+
+    config = load_config(path)
+
+    assert config.tissue.source is source
 
 
 @pytest.mark.parametrize("field", ("checkpoint", "model_identifier", "model_revision"))
@@ -117,4 +137,5 @@ def test_multi_dataset_examples_are_strict_and_portable(
     assert config.dataset.name == dataset_name
     assert config.dataset.root == dataset_root.resolve()
     assert config.embeddings.root == (dataset_root / "Embeddings").resolve()
+    assert config.tissue.source is TissueSource.ATLASPATCH
     assert not str(config.dataset.root).startswith(str(PROJECT_ROOT))

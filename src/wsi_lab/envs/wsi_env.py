@@ -14,6 +14,8 @@ from wsi_lab.constants import BELIEF_MAGNIFICATIONS, NAVIGATION_MAGNIFICATIONS, 
 from wsi_lab.envs.actions import DIAGNOSIS_ACTIONS, NAVIGATION_ACTIONS, Action
 from wsi_lab.envs.observation import (
     OverviewTransform,
+    ROIObservationTransform,
+    crop_overview_to_roi,
     increment_visits,
     location_mask,
     make_observation_space,
@@ -34,6 +36,9 @@ class NavigationCell:
     neighbor_ids: tuple[int, int, int, int] = (-1, -1, -1, -1)
     tissue_fraction: float = 0.0
     embedding_index: int = -1
+    # Defaults to true so callers loading navigation artifacts created before
+    # tissue-bounded navigation keep the historical all-cells-navigable behavior.
+    tissue_valid: bool = True
 
 
 @dataclass(slots=True)
@@ -44,6 +49,10 @@ class LoadedSlide:
     overview_transform: OverviewTransform
     cells: Mapping[int, NavigationCell]
     start_cell_id: int
+    # The snapped tissue ROI is expressed in the same level-0/global coordinate
+    # system as ``NavigationCell.bounds``.  ``None`` preserves compatibility
+    # with custom/legacy episode sources by using the full slide extent.
+    navigation_roi_level0: tuple[int, int, int, int] | None = None
 
 
 class EpisodeSource(Protocol):
@@ -134,6 +143,8 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
         self._evaluation_index = 0
         self._slide: LoadedSlide | None = None
         self._cell: NavigationCell | None = None
+        self._observation_transform: ROIObservationTransform | None = None
+        self._spatial_overview: np.ndarray | None = None
         self._visits: np.ndarray | None = None
         self._viewport: np.ndarray | None = None
         self._evidence: set[tuple[float, int]] = set()
@@ -152,6 +163,14 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
     @property
     def evidence_count(self) -> int:
         return len(self._evidence)
+
+    @property
+    def observation_transform(self) -> ROIObservationTransform:
+        """The explicit global-level-0 to ROI-observation coordinate map."""
+
+        if self._observation_transform is None:
+            raise RuntimeError("reset() must be called before accessing the observation transform")
+        return self._observation_transform
 
     def _select_slide_id(self, options: dict[str, Any] | None) -> str:
         if options and "slide_id" in options:
@@ -177,9 +196,27 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
                 f"Overview has shape {self._slide.overview.shape}; expected "
                 f"({self.overview_size}, {self.overview_size}, 3)"
             )
+        full_slide_bounds = (
+            0,
+            0,
+            self._slide.overview_transform.source_width,
+            self._slide.overview_transform.source_height,
+        )
+        roi_bounds = self._slide.navigation_roi_level0 or full_slide_bounds
+        self._observation_transform = ROIObservationTransform.fit(
+            roi_bounds,
+            (self.overview_size, self.overview_size),
+        )
+        self._spatial_overview = crop_overview_to_roi(
+            self._slide.overview,
+            self._slide.overview_transform,
+            self._observation_transform,
+        )
         self._cell = self._slide.cells[self._slide.start_cell_id]
         if self._cell.magnification != NAVIGATION_MAGNIFICATIONS[0]:
             raise ValueError("Start cell must be at 0.625x")
+        if not self._cell.tissue_valid:
+            raise ValueError("Start cell must be tissue-valid")
         self._visits = np.zeros((self.overview_size, self.overview_size), dtype=np.uint32)
         self._viewport = self.source.read_viewport(
             self._slide.slide_id, self._cell, self.viewport_size
@@ -192,7 +229,7 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
         self._revisit_count = 0
         self._magnification_histogram = Counter({f"{self._cell.magnification:g}": 1})
         self._trajectory = [self._trajectory_point(action=None)]
-        increment_visits(self._visits, self._slide.overview_transform, self._cell.bounds)
+        increment_visits(self._visits, self._observation_transform, self._cell.bounds)
         info = self._info()
         info["reset_visit"] = True
         return self._observation(), info
@@ -206,15 +243,28 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
             mask[Action.DIAGNOSE_CANCEROUS] = True
             mask[Action.DIAGNOSE_BENIGN] = True
             return mask
+        # Pan targets are the precomputed nearest tissue-valid cells in each
+        # cardinal direction. Child IDs remain the four geometric quadrants,
+        # so tissue validity is enforced here rather than rewriting topology.
         for index, cell_id in enumerate(self._cell.neighbor_ids):
-            mask[index] = cell_id >= 0
+            mask[index] = self._is_tissue_valid_target(cell_id)
         for index, cell_id in enumerate(self._cell.child_ids, start=4):
-            mask[index] = cell_id >= 0
+            mask[index] = self._is_tissue_valid_target(cell_id)
+        # Zoom-out keeps the existing geometric parent transition. A valid
+        # child produced from the tissue graph necessarily has a valid parent.
         mask[Action.ZOOM_OUT] = self._cell.parent_id >= 0
         if self.evidence_count >= self.min_diagnostic_evidence:
             mask[Action.DIAGNOSE_CANCEROUS] = True
             mask[Action.DIAGNOSE_BENIGN] = True
         return mask
+
+    def _is_tissue_valid_target(self, cell_id: int) -> bool:
+        """Return whether a graph edge resolves to a navigable tissue cell."""
+
+        if cell_id < 0:
+            return False
+        assert self._slide is not None
+        return bool(self._slide.cells[cell_id].tissue_valid)
 
     def _resolve_navigation(self, action: Action) -> NavigationCell:
         assert self._slide is not None and self._cell is not None
@@ -258,6 +308,7 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
             return self._observation(), -self.step_cost, False, False, info
 
         belief_before = float(self.belief_state.probability)
+        evidence_count_before = self.evidence_count
         self._actions_taken += 1
         if selected in DIAGNOSIS_ACTIONS:
             prediction = int(selected is Action.DIAGNOSE_CANCEROUS)
@@ -286,7 +337,8 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
         self._viewport = self.source.read_viewport(
             self._slide.slide_id, self._cell, self.viewport_size
         )
-        increment_visits(self._visits, self._slide.overview_transform, self._cell.bounds)
+        assert self._observation_transform is not None
+        increment_visits(self._visits, self._observation_transform, self._cell.bounds)
         evidence_added = self._maybe_add_evidence()
         self._trajectory.append(self._trajectory_point(action=int(selected)))
         belief_after = float(self.belief_state.probability)
@@ -297,6 +349,8 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
             reward_type=self.reward_type,
             step_cost=self.step_cost,
             beta=self.belief_reward_beta,
+            evidence_added=evidence_added,
+            evidence_count_before=evidence_count_before,
         )
         info = self._info()
         info.update(
@@ -310,17 +364,26 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
 
     def _observation(self) -> dict[str, np.ndarray]:
         assert self._slide is not None and self._cell is not None
+        assert self._observation_transform is not None and self._spatial_overview is not None
         assert self._visits is not None and self._viewport is not None
-        overview = rgb_chw_float(self._slide.overview)
-        location = location_mask(self._slide.overview_transform, self._cell.bounds)
+        overview = rgb_chw_float(self._spatial_overview)
+        location = location_mask(self._observation_transform, self._cell.bounds)
         visits = np.minimum(self._visits, self.max_visit_count).astype(np.float32)
         visits /= float(self.max_visit_count)
         magnification_index = NAVIGATION_MAGNIFICATIONS.index(self._cell.magnification)
+        center_x = (self._cell.bounds[0] + self._cell.bounds[2]) / 2
+        center_y = (self._cell.bounds[1] + self._cell.bounds[3]) / 2
+        roi_x, roi_y = self._observation_transform.global_to_normalized_point(
+            center_x,
+            center_y,
+        )
         scalars = np.asarray(
             [
                 magnification_index / (len(NAVIGATION_MAGNIFICATIONS) - 1),
                 self.remaining_actions / self.max_episode_steps,
                 float(self.belief_state.probability),
+                roi_x,
+                roi_y,
             ],
             dtype=np.float32,
         )
@@ -334,7 +397,14 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
 
     def _info(self) -> dict[str, Any]:
         assert self._slide is not None and self._cell is not None
+        assert self._observation_transform is not None
         observed_views = sum(self._magnification_histogram.values())
+        center_x = (self._cell.bounds[0] + self._cell.bounds[2]) / 2
+        center_y = (self._cell.bounds[1] + self._cell.bounds[3]) / 2
+        roi_x, roi_y = self._observation_transform.global_to_normalized_point(
+            center_x,
+            center_y,
+        )
         return {
             "slide_id": self._slide.slide_id,
             "label": self._slide.label,
@@ -342,6 +412,10 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
             "magnification": self._cell.magnification,
             "row": self._cell.row,
             "column": self._cell.column,
+            "cell_bounds_level0": self._cell.bounds,
+            "navigation_roi_level0": self._observation_transform.global_bounds,
+            "roi_x": float(np.clip(roi_x, 0.0, 1.0)),
+            "roi_y": float(np.clip(roi_y, 0.0, 1.0)),
             "belief": float(self.belief_state.probability),
             "evidence_count": self.evidence_count,
             "unique_evidence_count": self.evidence_count,
@@ -374,11 +448,17 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
     def render(self) -> np.ndarray:
         from wsi_lab.envs.rendering import render_state
 
-        if self._slide is None or self._cell is None or self._visits is None:
+        if (
+            self._slide is None
+            or self._cell is None
+            or self._observation_transform is None
+            or self._spatial_overview is None
+            or self._visits is None
+        ):
             raise RuntimeError("reset() must be called before render()")
         return render_state(
-            self._slide.overview,
-            self._slide.overview_transform,
+            self._spatial_overview,
+            self._observation_transform,
             self._cell.bounds,
             self._visits,
             self.max_visit_count,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from wsi_lab.baselines import (
     ConfidenceThresholdPolicy,
@@ -10,7 +11,7 @@ from wsi_lab.baselines import (
 
 
 def _observation(belief: float, magnification: float = 1.0):
-    return {"scalars": np.asarray([magnification, 0.5, belief], dtype=np.float32)}
+    return {"scalars": np.asarray([magnification, 0.5, belief, 0.25, 0.75], dtype=np.float32)}
 
 
 def _info(valid: list[int]):
@@ -34,3 +35,11 @@ def test_fixed_budget_waits_for_exact_number_of_navigation_actions() -> None:
     assert policy.act(observation, info) == 3
     assert policy.act(observation, info) == 3
     assert policy.act(observation, info) == 9
+
+
+def test_baselines_reject_legacy_three_scalar_observation() -> None:
+    policy = RasterPolicy()
+    observation = {"scalars": np.asarray([1.0, 0.5, 0.9], dtype=np.float32)}
+
+    with pytest.raises(ValueError, match=r"shape \[5\]"):
+        policy.act(observation, _info([9, 10]))

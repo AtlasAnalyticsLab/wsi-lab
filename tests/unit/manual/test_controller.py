@@ -9,7 +9,7 @@ import pytest
 from wsi_lab.envs.actions import Action
 from wsi_lab.envs.wsi_env import WSIEnv
 from wsi_lab.manual.controller import ACTION_KEY_BINDINGS, ManualController
-from wsi_lab.manual.ui import ManualPlayWindow, observation_panels
+from wsi_lab.manual.ui import SCALAR_NAMES, ManualPlayWindow, observation_panels
 from wsi_lab.testing.synthetic import DeterministicBelief, SyntheticEpisodeSource
 
 
@@ -154,6 +154,16 @@ def test_observation_panels_display_every_global_channel() -> None:
     assert float(composite.max()) <= 1.0
 
 
+def test_manual_scalar_labels_match_the_actor_contract() -> None:
+    assert SCALAR_NAMES == (
+        "magnification",
+        "remaining budget",
+        "ABMIL belief",
+        "tissue-ROI center x",
+        "tissue-ROI center y",
+    )
+
+
 def test_manual_window_refreshes_after_keyboard_action() -> None:
     import matplotlib
 
@@ -169,9 +179,13 @@ def test_manual_window_refreshes_after_keyboard_action() -> None:
 
     try:
         assert len(window.figure.axes) == 7
-        assert window.viewport_axis.get_title() == "Current viewport"
-        assert window.location_axis.get_title() == "Current location (global 3)"
-        assert window.visits_axis.get_title() == "Visited map (global 4)"
+        assert window.viewport_axis.get_title() == "Current viewport (global WSI cell)"
+        assert window.overview_axis.get_title() == "Tissue ROI overview RGB (global 0-2)"
+        assert window.location_axis.get_title() == "Tissue ROI current location (global 3)"
+        assert window.visits_axis.get_title() == "Tissue ROI visited map (global 4)"
+        status = window.status_axis.texts[0].get_text()
+        assert "tissue-ROI center x" in status
+        assert "tissue-ROI center y" in status
         window._on_key(SimpleNamespace(key="7"))
         assert controller.latest_action is Action.ZOOM_IN_TL
         assert controller.info is not None

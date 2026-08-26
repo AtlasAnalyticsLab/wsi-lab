@@ -103,7 +103,7 @@ class TissueSource(StrEnum):
 
 
 class TissueConfig(ConfigModel):
-    source: TissueSource = TissueSource.AUTO
+    source: TissueSource = TissueSource.ATLASPATCH
     threshold: StrictFloat = Field(default=0.01, ge=0.0, le=1.0)
     rebuild: StrictBool = False
     atlaspatch: AtlasPatchConfig = Field(default_factory=AtlasPatchConfig)

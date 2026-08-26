@@ -15,9 +15,14 @@ from typing import Any
 import numpy as np
 
 from wsi_lab.constants import SCHEMA_VERSION, magnification_token
-from wsi_lab.errors import ArtifactCompatibilityError
+from wsi_lab.errors import ArtifactCompatibilityError, PreprocessingError
 from wsi_lab.preprocessing.atlaspatch import sha256_file
-from wsi_lab.preprocessing.geometry import GRID_DTYPE, GridLevel, NavigationGeometry
+from wsi_lab.preprocessing.geometry import (
+    GRID_DTYPE,
+    GridLevel,
+    NavigationGeometry,
+    validate_geometry,
+)
 from wsi_lab.preprocessing.mapping import MappingSummary
 from wsi_lab.preprocessing.tissue import TissueMask
 from wsi_lab.utils.atomic import atomic_json_dump
@@ -264,6 +269,12 @@ class ArtifactStore:
                 int(value) for value in geometry.level(geometry.magnifications[0]).cells["cell_id"]
             }:
                 raise ValueError("start_cell_id is not in the coarsest grid")
+            start_level = geometry.level(geometry.magnifications[0])
+            start_local = int(start_cell_id) - start_level.offset
+            if not bool(start_level.cells["tissue_valid"][start_local]):
+                raise ValueError("start_cell_id is not tissue-valid")
+            if geometry.tissue_bbox_level0 is None or geometry.navigation_roi_level0 is None:
+                raise ValueError("geometry has no persisted tissue bounds/navigation ROI")
 
             atomic_json_dump(
                 paths.metadata,
@@ -313,6 +324,8 @@ class ArtifactStore:
                 "cell_id_offset": geometry.cell_id_offset,
                 "num_cells": geometry.num_cells,
                 "start_cell_id": int(start_cell_id),
+                "tissue_bbox_level0": list(geometry.tissue_bbox_level0),
+                "navigation_roi_level0": list(geometry.navigation_roi_level0),
                 "overview_transform": transform.to_dict(),
                 "overview": self._array_description(paths.overview, overview_array, paths.root),
                 "tissue_mask": {
@@ -383,6 +396,16 @@ class ArtifactStore:
                 and raw.get("input_fingerprint") != expected_input_fingerprint
             ):
                 raise ArtifactCompatibilityError(f"processed slide is stale: {paths.metadata}")
+            for key in ("tissue_bbox_level0", "navigation_roi_level0"):
+                bounds = raw.get(key)
+                if (
+                    not isinstance(bounds, list)
+                    or len(bounds) != 4
+                    or any(not isinstance(value, int) for value in bounds)
+                ):
+                    raise ArtifactCompatibilityError(
+                        f"processed slide has invalid {key}: {paths.metadata}"
+                    )
             descriptions = [raw["overview"], raw["tissue_mask"], *raw["grids"].values()]
             for description in descriptions:
                 artifact = paths.root / str(description["path"])
@@ -446,6 +469,8 @@ class ArtifactStore:
 
     def load_geometry(self, slide_id: str, *, mmap: bool = True) -> NavigationGeometry:
         metadata = self.load_metadata(slide_id)
+        tissue_bounds = metadata["tissue_bbox_level0"]
+        navigation_roi = metadata["navigation_roi_level0"]
         levels: dict[float, GridLevel] = {}
         for token, description in sorted(
             metadata["grids"].items(), key=lambda item: float(item[1]["magnification"])
@@ -460,7 +485,7 @@ class ArtifactStore:
                 offset=int(description["offset"]),
                 cells=self.load_grid(slide_id, magnification, mmap=mmap),
             )
-        return NavigationGeometry(
+        geometry = NavigationGeometry(
             slide_id=slide_id,
             slide_index=int(metadata["slide_index"]),
             level0_width=int(metadata["level0_width"]),
@@ -468,7 +493,26 @@ class ArtifactStore:
             level0_magnification=float(metadata["level0_magnification"]),
             cell_id_offset=int(metadata["cell_id_offset"]),
             levels=levels,
+            tissue_bbox_level0=(
+                int(tissue_bounds[0]),
+                int(tissue_bounds[1]),
+                int(tissue_bounds[2]),
+                int(tissue_bounds[3]),
+            ),
+            navigation_roi_level0=(
+                int(navigation_roi[0]),
+                int(navigation_roi[1]),
+                int(navigation_roi[2]),
+                int(navigation_roi[3]),
+            ),
         )
+        try:
+            validate_geometry(geometry)
+        except PreprocessingError as exc:
+            raise ArtifactCompatibilityError(
+                f"processed navigation topology is invalid for {slide_id}: {exc}"
+            ) from exc
+        return geometry
 
     def write_index(
         self,

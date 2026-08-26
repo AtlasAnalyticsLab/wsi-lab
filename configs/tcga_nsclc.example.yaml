@@ -21,7 +21,7 @@ workspace:
   root: ../workspace/tcga_nsclc
 
 tissue:
-  source: auto
+  source: atlaspatch
   threshold: 0.01
   rebuild: false
   atlaspatch:

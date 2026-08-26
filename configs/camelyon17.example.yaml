@@ -23,7 +23,7 @@ workspace:
   root: ../workspace/camelyon17
 
 tissue:
-  source: auto
+  source: atlaspatch
   threshold: 0.01
   rebuild: false
   atlaspatch:

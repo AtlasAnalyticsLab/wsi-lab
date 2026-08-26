@@ -25,6 +25,8 @@ from wsi_lab.preprocessing.tissue import (
     apply_tissue_to_geometry,
     choose_start_cell,
     load_or_create_tissue_mask,
+    navigation_roi_level0,
+    tissue_bbox_level0,
 )
 
 __all__ = [
@@ -48,4 +50,6 @@ __all__ = [
     "ensure_mpp_override_csv",
     "load_or_create_tissue_mask",
     "map_embeddings_to_grid",
+    "navigation_roi_level0",
+    "tissue_bbox_level0",
 ]

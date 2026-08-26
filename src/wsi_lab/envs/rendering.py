@@ -8,12 +8,12 @@ from typing import Any
 
 import numpy as np
 
-from wsi_lab.envs.observation import OverviewTransform
+from wsi_lab.envs.observation import ObservationTransform, OverviewTransform
 
 
 def render_state(
     overview: np.ndarray,
-    transform: OverviewTransform,
+    transform: ObservationTransform,
     bounds: tuple[int, int, int, int],
     visits: np.ndarray,
     max_visit_count: int,
