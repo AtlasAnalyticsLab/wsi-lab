@@ -1,0 +1,5 @@
+include README.md
+include environment.yml
+recursive-include configs *.yaml
+recursive-include docs *.md
+
