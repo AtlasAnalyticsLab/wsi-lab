@@ -107,6 +107,10 @@ class Camelyon16Adapter(DatasetAdapter):
         return self._labels_path
 
     @property
+    def metadata_paths(self) -> tuple[Path, ...]:
+        return (self._labels_path,)
+
+    @property
     def embeddings_root(self) -> Path:
         return self._embeddings_root
 

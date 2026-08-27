@@ -2,6 +2,7 @@
 
 from wsi_lab.data.base import DatasetAdapter, EmbeddingLocation, SlideRecord
 from wsi_lab.data.camelyon16 import Camelyon16Adapter
+from wsi_lab.data.camelyon16_17 import CombinedCamelyonAdapter
 from wsi_lab.data.camelyon17 import Camelyon17Adapter
 from wsi_lab.data.factory import create_dataset_adapter
 from wsi_lab.data.generic import GenericDatasetAdapter, ManifestDatasetAdapter
@@ -18,6 +19,7 @@ from wsi_lab.data.validation import DatasetValidator, ValidationOptions, report_
 __all__ = [
     "Camelyon16Adapter",
     "Camelyon17Adapter",
+    "CombinedCamelyonAdapter",
     "DatasetAdapter",
     "DatasetSplit",
     "DatasetValidator",

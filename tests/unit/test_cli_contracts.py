@@ -14,6 +14,7 @@ import wsi_lab
 from wsi_lab import cli
 from wsi_lab.config.models import AppConfig, DatasetConfig, WorkspaceConfig
 from wsi_lab.data.base import SlideRecord
+from wsi_lab.data.splits import DatasetSplit, SplitAssignment
 from wsi_lab.errors import PreprocessingError, TestSplitAccessError
 from wsi_lab.pipeline.planner import (
     PipelinePlan,
@@ -82,6 +83,64 @@ def test_configured_runner_registers_an_implementation_for_every_stage(
 
     assert cli._configured_runner(_config(tmp_path)) is runner
     assert set(registered) == set(Stage)
+
+
+def test_split_stage_uses_adapter_specific_split_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    records = tuple(
+        SlideRecord(
+            slide_id=f"slide_{index}",
+            slide_path=tmp_path / f"slide_{index}.tif",
+            label=index % 2,
+            label_name="negative" if index % 2 == 0 else "positive",
+            official_cohort="development",
+            patient_id=f"patient_{index}",
+        )
+        for index in range(3)
+    )
+    expected = DatasetSplit(
+        dataset="custom_combined",
+        seed=7,
+        validation_fraction=0.25,
+        test_fraction=0.15,
+        strategy="adapter_specific",
+        assignments=tuple(
+            SplitAssignment(record.slide_id, int(record.label), split, record.patient_id)
+            for record, split in zip(records, ("train", "val", "test"), strict=True)
+        ),
+        schema_version=2,
+    )
+    captured: dict[str, object] = {}
+
+    class Adapter:
+        name = "custom_combined"
+
+        def iter_slides(self):
+            return iter(records)
+
+        def create_split(self, **kwargs):
+            captured.update(kwargs)
+            return expected
+
+    monkeypatch.setattr(cli, "_adapter", lambda _: Adapter())
+    config.split.seed = 7
+    config.split.validation_fraction = 0.25
+    config.split.test_fraction = 0.15
+
+    result = cli._split_stage(config, tmp_path / "split", "fingerprint", StageAction.BUILD)
+
+    assert captured == {
+        "validation_fraction": 0.25,
+        "test_fraction": 0.15,
+        "seed": 7,
+        "stratify_by_center": True,
+        "prefer_patient_level": True,
+    }
+    assert result["strategy"] == "adapter_specific"
+    assert result["counts"] == {"train": 1, "val": 1, "test": 1}
+    assert DatasetSplit.load(tmp_path / "split/custom_combined_split.json") == expected
 
 
 @pytest.mark.parametrize("command", ("train-rl", "run"))

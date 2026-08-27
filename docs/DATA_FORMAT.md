@@ -13,6 +13,7 @@ Use one of these values for `dataset.name`:
 ```text
 camelyon16
 camelyon17
+camelyon16_17
 tcga_nsclc
 generic
 ```
@@ -124,6 +125,76 @@ maximum slide label while every node retains its own label.
 
 The dataset root is the `CAMELYON17/` directory, not `images/`, `masks/`, or
 `Embeddings/`.
+
+## Combined CAMELYON16 + CAMELYON17 adapter
+
+Use `dataset.name: camelyon16_17` to train one benign-versus-cancerous model on
+both native cohorts. The adapter is a read-only composition: it does not copy,
+rename, or merge WSI, sidecar, or HDF5 files. Its root is the parent containing
+the two native roots:
+
+```text
+CAMELYON_DATASETS/
+├── CAMELYON16/
+│   ├── images/
+│   ├── evaluation/reference.csv
+│   ├── Embeddings/
+│   ├── background_tissue/             # optional
+│   ├── masks/                         # optional
+│   └── annotations/                   # optional
+└── CAMELYON17/
+    ├── images/
+    ├── stages.csv
+    ├── Embeddings/
+    ├── background_tissue/             # optional
+    ├── masks/                         # optional
+    └── annotations/                   # optional
+```
+
+`dataset.camelyon16_root` and `dataset.camelyon17_root` default to
+`CAMELYON16` and `CAMELYON17` beneath the common `dataset.root`.
+`dataset.labels` identifies the CAMELYON16 reference table, while
+`dataset.camelyon17_labels` identifies the CAMELYON17 stage table. The shared
+native subdirectory fields (`slides_dir`, `tissue_masks_dir`,
+`tumor_masks_dir`, and `annotations_dir`) are interpreted beneath each child
+root. Likewise, the relative `embeddings.root` and embedding directory template
+are applied independently beneath both child roots, so each slide continues to
+use its original HDF5 artifact.
+
+The existing native mappings form one binary target without relabeling source
+files:
+
+```text
+benign (0)       CAMELYON16 normal; CAMELYON17 negative
+cancerous (1)    CAMELYON16 tumor; CAMELYON17 itc, micro, or macro
+```
+
+Each normalized slide record retains `metadata["source_dataset"]` as either
+`camelyon16` or `camelyon17` for provenance. Native label names, tumor subtype,
+patient identifiers, centers, masks, and annotations are otherwise preserved.
+
+Splits are constructed separately for the two sources with the same configured
+seed, fractions, and center-stratification setting, then corresponding
+partitions are unioned. This is important: applying one global splitter would
+discard CAMELYON17's patient-level held-out test and would fall back to
+slide-level grouping because CAMELYON16 lacks patient IDs. In the combined
+adapter:
+
+- CAMELYON16 keeps its labeled official test set and receives its native
+  slide-level train/validation split;
+- CAMELYON17 keeps patients intact and receives its generated
+  train/validation/test split; and
+- CAMELYON17 patients 100–199 remain blind `test_unlabeled` records and are
+  persisted as unassigned. They cannot be used for binary classification,
+  training, checkpoint selection, or metrics.
+
+With the complete official datasets, seed 1, and the default fractions, the
+standalone counts are CAMELYON16 `216/54/129` and CAMELYON17 `300/100/100` for
+train/validation/labeled test. Their combined partitions therefore contain
+`516/154/229` labeled slides, with another 500 blind CAMELYON17 slides recorded
+as unassigned. The combined test metric consequently covers CAMELYON16's
+official labeled test cohort plus CAMELYON17's internally held-out labeled
+patients; it does not cover CAMELYON17's blind official-test cohort.
 
 ## Native TCGA-NSCLC adapter
 

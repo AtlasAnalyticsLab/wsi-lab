@@ -11,7 +11,10 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from wsi_lab.data.splits import DatasetSplit
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +74,12 @@ class DatasetAdapter(ABC):
     def magnifications(self) -> tuple[float, ...]:
         """Embedding magnifications required by this adapter instance."""
 
+    @property
+    def metadata_paths(self) -> tuple[Path, ...]:
+        """Authoritative metadata files that define this dataset's inventory."""
+
+        return ()
+
     @abstractmethod
     def iter_slides(self) -> Iterator[SlideRecord]:
         """Yield every discoverable slide in deterministic order."""
@@ -88,6 +97,29 @@ class DatasetAdapter(ABC):
 
     def embedding_locations(self, slide_id: str) -> tuple[EmbeddingLocation, ...]:
         return tuple(self.embedding_location(slide_id, value) for value in self.magnifications)
+
+    def create_split(
+        self,
+        *,
+        validation_fraction: float = 0.2,
+        test_fraction: float = 0.2,
+        seed: int = 1,
+        stratify_by_center: bool = True,
+        prefer_patient_level: bool = True,
+    ) -> DatasetSplit:
+        """Create this adapter's deterministic train/validation/test manifest."""
+
+        from wsi_lab.data.splits import create_dataset_split
+
+        return create_dataset_split(
+            self.iter_slides(),
+            dataset=self.name,
+            validation_fraction=validation_fraction,
+            test_fraction=test_fraction,
+            seed=seed,
+            stratify_by_center=stratify_by_center,
+            prefer_patient_level=prefer_patient_level,
+        )
 
 
 def reject_excluded_dataset(path: str | Path) -> Path:

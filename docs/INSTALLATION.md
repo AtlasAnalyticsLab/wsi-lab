@@ -207,8 +207,9 @@ There is deliberately no Otsu, HSV, or other fallback. AtlasPatch failures inclu
 - CUDA/torchvision operator errors: recreate the environment so PyTorch, torchvision, and `pytorch-cuda` are solved together.
 - AtlasPatch import/command failure: verify `atlas-patch==1.1.0`, the pinned SAM2 commit, and access to `AtlasAnalyticsLab/AtlasPatch/model.pth` with `python -m pip freeze` and the captured reproduction command.
 - Missing dataset-root variable: export the variable named by the selected
-  example config (`CAMELYON16_ROOT`, `CAMELYON17_ROOT`, `TCGA_NSCLC_ROOT`, or
-  `WSI_DATASET_ROOT`) before loading it.
+  example config (`CAMELYON16_ROOT`, `CAMELYON17_ROOT`,
+  `CAMELYON_DATASETS_ROOT`, `TCGA_NSCLC_ROOT`, or `WSI_DATASET_ROOT`) before
+  loading it.
 - AtlasPatch licensing: review [THIRD_PARTY.md](THIRD_PARTY.md) before distribution or commercial use.
 
 ## Documentation and configuration in distributions

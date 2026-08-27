@@ -43,8 +43,16 @@ def _resolve_paths(config: AppConfig, config_path: Path) -> AppConfig:
     base = config_path.parent.resolve()
     config.dataset.root = _absolute(config.dataset.root, base)
     dataset_root = config.dataset.root
+    config.dataset.camelyon16_root = _absolute(config.dataset.camelyon16_root, dataset_root)
+    config.dataset.camelyon17_root = _absolute(config.dataset.camelyon17_root, dataset_root)
     config.dataset.slides_dir = _absolute(config.dataset.slides_dir, dataset_root)
-    config.dataset.labels = _absolute(config.dataset.labels, dataset_root)
+    labels_root = (
+        config.dataset.camelyon16_root if config.dataset.name == "camelyon16_17" else dataset_root
+    )
+    config.dataset.labels = _absolute(config.dataset.labels, labels_root)
+    config.dataset.camelyon17_labels = _absolute(
+        config.dataset.camelyon17_labels, config.dataset.camelyon17_root
+    )
     config.dataset.tissue_masks_dir = _absolute(config.dataset.tissue_masks_dir, dataset_root)
     config.dataset.tumor_masks_dir = _absolute(config.dataset.tumor_masks_dir, dataset_root)
     config.dataset.annotations_dir = _absolute(config.dataset.annotations_dir, dataset_root)
@@ -59,6 +67,8 @@ def _resolve_paths(config: AppConfig, config_path: Path) -> AppConfig:
     excluded = {"pean", "bench_embeddings"}
     for label, path in (
         ("dataset root", config.dataset.root),
+        ("CAMELYON16 root", config.dataset.camelyon16_root),
+        ("CAMELYON17 root", config.dataset.camelyon17_root),
         ("embedding root", config.embeddings.root),
     ):
         if any(part.casefold() in excluded for part in path.parts):

@@ -19,6 +19,7 @@ USER_ASSETS = (
     "README.md",
     "environment.yml",
     "configs/camelyon16.example.yaml",
+    "configs/camelyon16_17.example.yaml",
     "configs/camelyon16.yaml",
     "configs/camelyon17.example.yaml",
     "configs/generic.example.yaml",

@@ -19,6 +19,10 @@ def create_dataset_adapter(dataset: Any, embeddings: Any) -> DatasetAdapter:
         from wsi_lab.data.camelyon17 import Camelyon17Adapter
 
         return Camelyon17Adapter.from_config(dataset, embeddings)
+    if name == "camelyon16_17":
+        from wsi_lab.data.camelyon16_17 import CombinedCamelyonAdapter
+
+        return CombinedCamelyonAdapter.from_config(dataset, embeddings)
     if name == "tcga_nsclc":
         from wsi_lab.data.tcga_nsclc import TCGANsclcAdapter
 

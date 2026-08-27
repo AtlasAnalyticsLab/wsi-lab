@@ -29,8 +29,13 @@ class ConfigModel(BaseModel):
 
 
 class DatasetConfig(ConfigModel):
-    name: Literal["camelyon16", "camelyon17", "tcga_nsclc", "generic"] = "camelyon16"
+    name: Literal["camelyon16", "camelyon17", "camelyon16_17", "tcga_nsclc", "generic"] = (
+        "camelyon16"
+    )
     root: Path
+    camelyon16_root: Path = Path("CAMELYON16")
+    camelyon17_root: Path = Path("CAMELYON17")
+    camelyon17_labels: Path = Path("stages.csv")
     slides_dir: Path = Path("images")
     labels: Path = Path("evaluation/reference.csv")
     tissue_masks_dir: Path = Path("background_tissue")

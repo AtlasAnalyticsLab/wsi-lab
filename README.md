@@ -2,10 +2,10 @@
 
 `wsi-lab` is a research package for sequential examination of whole-slide images. It builds a dense six-level navigation hierarchy, attaches sparse tissue-filtered UNI v2 evidence, trains a calibrated gated-attention MIL belief model, and supplies a local recurrent-PPO implementation for `WSILab-v0`.
 
-The package has native-layout adapters for CAMELYON16, CAMELYON17, and
-TCGA-NSCLC (LUAD and LUSC), plus a manifest adapter for other binary WSI
-datasets. All adapters use the existing AtlasPatch/UNI v2 HDF5 schema. PEAN is
-intentionally unsupported.
+The package has native-layout adapters for CAMELYON16, CAMELYON17, their
+combined binary-classification cohort, and TCGA-NSCLC (LUAD and LUSC), plus a
+manifest adapter for other binary WSI datasets. All adapters use the existing
+AtlasPatch/UNI v2 HDF5 schema. PEAN is intentionally unsupported.
 
 ## Install
 
@@ -52,6 +52,12 @@ Select the matching adapter with `dataset.name`:
   `Embeddings/` directory. Labeled patients are split as patient groups. Images
   without stage rows are retained as blind official-test records and are never
   used for training, reward computation, or metrics.
+- `camelyon16_17` reads both native datasets beneath one parent without copying
+  them. It preserves each source's independently generated split and unions the
+  corresponding train, validation, and labeled-test partitions. CAMELYON16
+  normal and CAMELYON17 negative slides map to benign (`0`); tumor, ITC, micro,
+  and macro slides map to cancerous (`1`). CAMELYON17's blind official-test
+  slides remain unassigned.
 - `tcga_nsclc` reads the native `TCGA-LUAD/` and `TCGA-LUSC/` cohorts, each with
   its own `images/` and `Embeddings/` directories. LUAD/LUSC are class cohorts,
   not data splits. The package generates train/validation/test membership while
@@ -62,9 +68,10 @@ Select the matching adapter with `dataset.name`:
 
 Portable starting configurations are supplied as
 `configs/camelyon16.example.yaml`, `configs/camelyon17.example.yaml`,
-`configs/tcga_nsclc.example.yaml`, and `configs/generic.example.yaml`. Set the
-environment variable named at the top of the selected file; do not replace it
-with a personal absolute path in a configuration that will be committed.
+`configs/camelyon16_17.example.yaml`, `configs/tcga_nsclc.example.yaml`, and
+`configs/generic.example.yaml`. Set the environment variable named at the top
+of the selected file; do not replace it with a personal absolute path in a
+configuration that will be committed.
 
 For a generic dataset, use this minimum structure:
 

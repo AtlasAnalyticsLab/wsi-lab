@@ -118,6 +118,10 @@ class Camelyon17Adapter(DatasetAdapter):
         return self._stages_path
 
     @property
+    def metadata_paths(self) -> tuple[Path, ...]:
+        return (self._stages_path,)
+
+    @property
     def embeddings_root(self) -> Path:
         return self._embeddings_root
 

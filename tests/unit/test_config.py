@@ -166,6 +166,7 @@ def test_config_rejects_excluded_or_escaping_embedding_sources(
 @pytest.mark.parametrize(
     ("filename", "environment_name", "dataset_name"),
     (
+        ("camelyon16_17.example.yaml", "CAMELYON_DATASETS_ROOT", "camelyon16_17"),
         ("camelyon17.example.yaml", "CAMELYON17_ROOT", "camelyon17"),
         ("tcga_nsclc.example.yaml", "TCGA_NSCLC_ROOT", "tcga_nsclc"),
         ("generic.example.yaml", "WSI_DATASET_ROOT", "generic"),
@@ -187,5 +188,15 @@ def test_multi_dataset_examples_are_strict_and_portable(
     assert config.dataset.name == dataset_name
     assert config.dataset.root == dataset_root.resolve()
     assert config.embeddings.root == (dataset_root / "Embeddings").resolve()
+    if dataset_name == "camelyon16_17":
+        assert config.dataset.camelyon16_root == (dataset_root / "CAMELYON16").resolve()
+        assert config.dataset.camelyon17_root == (dataset_root / "CAMELYON17").resolve()
+        assert (
+            config.dataset.labels
+            == (dataset_root / "CAMELYON16/evaluation/reference.csv").resolve()
+        )
+        assert (
+            config.dataset.camelyon17_labels == (dataset_root / "CAMELYON17/stages.csv").resolve()
+        )
     assert config.tissue.source is TissueSource.ATLASPATCH
     assert not str(config.dataset.root).startswith(str(PROJECT_ROOT))

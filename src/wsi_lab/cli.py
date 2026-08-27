@@ -21,7 +21,6 @@ from wsi_lab.data.factory import create_dataset_adapter
 from wsi_lab.data.splits import (
     DatasetSplit,
     SplitName,
-    create_dataset_split,
     validate_dataset_split,
 )
 from wsi_lab.errors import PreprocessingError, TestSplitAccessError, WSILabError
@@ -125,9 +124,7 @@ def _split_stage(
 ) -> dict[str, object]:
     del action
     adapter = _adapter(config)
-    split = create_dataset_split(
-        adapter.iter_slides(),
-        dataset=adapter.name,
+    split = adapter.create_split(
         validation_fraction=config.split.validation_fraction,
         test_fraction=config.split.test_fraction,
         seed=config.split.seed,
@@ -137,6 +134,11 @@ def _split_stage(
     split_path = artifact_dir / f"{adapter.name}_split.json"
     split.save(split_path)
     split_names: tuple[SplitName, ...] = ("train", "val", "test")
+    development = tuple(
+        record
+        for record in adapter.iter_slides()
+        if record.is_labeled and not record.is_official_test
+    )
     return {
         "input_fingerprint": fingerprint_value,
         "split_path": str(split_path),
@@ -145,8 +147,9 @@ def _split_stage(
         "counts": {name: len(split.ids(name)) for name in split_names},
         "unassigned": len(split.unassigned),
         "limitation": (
-            "No reliable patient IDs are available; consecutive-section leakage cannot be guaranteed"
-            if not any(record.patient_id for record in adapter.iter_slides())
+            "Some development records lack reliable patient IDs; those records use "
+            "slide-level splitting and consecutive-section leakage cannot be guaranteed"
+            if not all(record.patient_id for record in development)
             else None
         ),
     }

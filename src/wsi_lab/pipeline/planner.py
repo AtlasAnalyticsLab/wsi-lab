@@ -119,8 +119,15 @@ def _native_adapter_signature(config: AppConfig, *, development_only: bool) -> d
         for record in adapter.iter_slides()
         if not development_only or (record.is_labeled and not record.is_official_test)
     )
+    metadata_paths = adapter.metadata_paths
+    if not metadata_paths:
+        labels: object = _file_signature(config.dataset.labels)
+    elif len(metadata_paths) == 1:
+        labels = _file_signature(metadata_paths[0])
+    else:
+        labels = [_file_signature(path) for path in metadata_paths]
     return {
-        "labels": _file_signature(config.dataset.labels),
+        "labels": labels,
         "slides": [_file_signature(record.slide_path) for record in records],
         "embeddings": {
             str(magnification): [
@@ -157,8 +164,12 @@ def _tissue_mask_signature(config: AppConfig) -> object:
 
 
 def _dataset_fingerprint_config(config: AppConfig) -> object:
-    if config.dataset.name != "camelyon16":
+    if config.dataset.name == "camelyon16_17":
         return config.dataset
+    if config.dataset.name != "camelyon16":
+        return config.dataset.model_dump(
+            exclude={"camelyon16_root", "camelyon17_root", "camelyon17_labels"}
+        )
     # Keep CAMELYON16 fingerprints compatible with artifacts created before
     # adapter-specific configuration fields were introduced.
     return {

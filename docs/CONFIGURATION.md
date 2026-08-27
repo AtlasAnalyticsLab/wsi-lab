@@ -27,6 +27,7 @@ The supplied portable configurations and their dataset-root variables are:
 ```text
 configs/camelyon16.example.yaml    CAMELYON16_ROOT
 configs/camelyon17.example.yaml    CAMELYON17_ROOT
+configs/camelyon16_17.example.yaml CAMELYON_DATASETS_ROOT
 configs/tcga_nsclc.example.yaml    TCGA_NSCLC_ROOT
 configs/generic.example.yaml       WSI_DATASET_ROOT
 ```
@@ -37,11 +38,23 @@ For example:
 export CAMELYON16_ROOT=/path/to/CAMELYON16
 ```
 
-Set each variable to the dataset's top-level native root, never its `images/`,
-`masks/`, or embedding subdirectory. Keep the `${...}` expression in any YAML
-that will be shared or committed so local filesystem paths are not published.
-TCGA's `embeddings.root` is written relative to each LUAD/LUSC cohort; generic
-manifest image and sidecar paths are root-relative. See
+For the combined adapter, point `CAMELYON_DATASETS_ROOT` at the common parent,
+not at either individual dataset:
+
+```bash
+export CAMELYON_DATASETS_ROOT=/path/to/CAMELYON_DATASETS
+# Contains CAMELYON16/ and CAMELYON17/ by default.
+```
+
+Set each single-dataset variable to that dataset's top-level native root, never
+its `images/`, `masks/`, or embedding subdirectory. Keep the `${...}`
+expression in any YAML that will be shared or committed so local filesystem
+paths are not published.
+TCGA's `embeddings.root` is written relative to each LUAD/LUSC cohort. For
+`camelyon16_17`, the relative `embeddings.root` is likewise applied beneath
+each native CAMELYON child root; `dataset.labels` selects the CAMELYON16 table
+and `dataset.camelyon17_labels` selects the CAMELYON17 table. Generic manifest
+image and sidecar paths are root-relative. See
 [DATA_FORMAT.md](DATA_FORMAT.md) for the exact adapter contracts.
 
 If a labeled native test cohort exists, it is preserved and
@@ -50,6 +63,15 @@ train/validation/test split using `validation_fraction` and `test_fraction`.
 Patient grouping is used when reliable IDs are available for every development
 record. Blind `test_unlabeled` records are persisted as unassigned and cannot
 be used by training or evaluation.
+
+`camelyon16_17` is the deliberate exception to a single global split. The split
+manager constructs the CAMELYON16 and CAMELYON17 splits independently with the
+same `split.seed`, `validation_fraction`, `test_fraction`, and
+`stratify_by_center` values, then unions partitions with matching names. Thus
+CAMELYON16 retains its official labeled test slides while CAMELYON17 retains
+patient-grouped generated test slides. With complete native datasets and the
+defaults, the result is 516 train, 154 validation, and 229 labeled test slides;
+the 500 blind CAMELYON17 official-test slides remain unassigned.
 
 Standalone evaluation defaults to `val`. Direct access to `test` requires both
 `--split test` and `--allow-test`. Training and calibration APIs reject test

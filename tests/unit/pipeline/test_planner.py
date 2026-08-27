@@ -282,3 +282,74 @@ def test_tcga_native_inventory_change_invalidates_persisted_split(tmp_path: Path
     after = stage_fingerprints(config)
 
     assert before[Stage.SPLIT] != after[Stage.SPLIT]
+
+
+def _combined_camelyon_config(tmp_path: Path) -> tuple[AppConfig, Path, Path]:
+    dataset_root = tmp_path / "datasets"
+    camelyon16 = dataset_root / "CAMELYON16"
+    camelyon17 = dataset_root / "CAMELYON17"
+    (camelyon16 / "evaluation").mkdir(parents=True)
+    (camelyon16 / "images").mkdir()
+    reference = camelyon16 / "evaluation/reference.csv"
+    reference.write_text(
+        "image,type,class,center\nnormal_001.tif,normal,negative,0\n",
+        encoding="utf-8",
+    )
+    (camelyon16 / "images/normal_001.tif").touch()
+    (camelyon17 / "images").mkdir(parents=True)
+    stages = camelyon17 / "stages.csv"
+    stages.write_text(
+        "patient,stage,center\npatient_000_node_0.tif,negative,0\n",
+        encoding="utf-8",
+    )
+    (camelyon17 / "images/patient_000_node_0.tif").touch()
+    return (
+        AppConfig(
+            dataset=DatasetConfig(name="camelyon16_17", root=dataset_root),
+            workspace=WorkspaceConfig(root=tmp_path / "workspace"),
+        ),
+        reference,
+        stages,
+    )
+
+
+@pytest.mark.parametrize("metadata_index", (1, 2))
+def test_combined_metadata_tables_participate_in_fingerprints(
+    tmp_path: Path, metadata_index: int
+) -> None:
+    config, reference, stages = _combined_camelyon_config(tmp_path)
+    before = stage_fingerprints(config)
+    metadata = (config, reference, stages)[metadata_index]
+    metadata.write_text(
+        metadata.read_text(encoding="utf-8").replace(",0\n", ",1\n"),
+        encoding="utf-8",
+    )
+    after = stage_fingerprints(config)
+
+    assert before[Stage.DATASET] != after[Stage.DATASET]
+    assert before[Stage.BELIEF_DATA] != after[Stage.BELIEF_DATA]
+    assert before[Stage.SPLIT] != after[Stage.SPLIT]
+
+
+def test_combined_only_config_fields_do_not_invalidate_existing_camelyon17(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "CAMELYON17"
+    (root / "images").mkdir(parents=True)
+    (root / "images/patient_000_node_0.tif").touch()
+    (root / "stages.csv").write_text(
+        "patient,stage,center\npatient_000_node_0.tif,negative,0\n",
+        encoding="utf-8",
+    )
+    config = AppConfig(
+        dataset=DatasetConfig(name="camelyon17", root=root),
+        workspace=WorkspaceConfig(root=tmp_path / "workspace"),
+    )
+    before = stage_fingerprints(config)
+
+    config.dataset.camelyon16_root = tmp_path / "irrelevant-camelyon16"
+    config.dataset.camelyon17_root = tmp_path / "irrelevant-camelyon17"
+    config.dataset.camelyon17_labels = tmp_path / "irrelevant-stages.csv"
+    after = stage_fingerprints(config)
+
+    assert before == after

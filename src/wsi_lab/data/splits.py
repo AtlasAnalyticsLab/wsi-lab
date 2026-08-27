@@ -385,6 +385,11 @@ def validate_dataset_split(
                 not record.is_official_test
                 and item.split == "test"
                 and not split.strategy.startswith("generated_")
+                and not (
+                    split.dataset == "camelyon16_17"
+                    and split.strategy == "combined_corresponding"
+                    and record.metadata.get("source_dataset") == "camelyon17"
+                )
             ):
                 raise DatasetValidationError(
                     f"development slide incorrectly assigned to test: {item.slide_id}"
