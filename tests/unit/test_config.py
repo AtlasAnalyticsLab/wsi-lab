@@ -48,6 +48,15 @@ def test_config_defaults_to_center_start_position(tmp_path: Path) -> None:
     assert config.environment.start_position == "center"
 
 
+def test_config_defaults_to_32_diagnostic_embeddings(tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text("dataset:\n  root: /tmp/data\n")
+
+    config = load_config(path)
+
+    assert config.environment.min_diagnostic_evidence == 32
+
+
 def test_config_defaults_to_disabled_augmentation(tmp_path: Path) -> None:
     path = tmp_path / "config.yaml"
     path.write_text("dataset:\n  root: /tmp/data\n")

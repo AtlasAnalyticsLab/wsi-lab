@@ -166,6 +166,13 @@ def make_test_env(**kwargs):
     )
 
 
+def test_environment_defaults_to_32_diagnostic_embeddings() -> None:
+    env = make_test_env()
+
+    assert env.min_diagnostic_evidence == 32
+    env.close()
+
+
 def test_start_position_defaults_to_preprocessed_center() -> None:
     source = SyntheticEpisodeSource(overview_size=32)
     env = make_env(source=source, overview_size=32, viewport_size=24)

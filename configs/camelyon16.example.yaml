@@ -40,7 +40,7 @@ environment:
   geometric_augmentation: false
   photometric_augmentation: false
   max_episode_steps: 500
-  min_diagnostic_evidence: 4
+  min_diagnostic_evidence: 32
   max_visit_count: 10
   reward_type: default
   step_cost: 0.001

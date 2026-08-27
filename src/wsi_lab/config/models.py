@@ -132,7 +132,7 @@ class EnvironmentConfig(ConfigModel):
     geometric_augmentation: StrictBool = False
     photometric_augmentation: StrictBool = False
     max_episode_steps: StrictInt = Field(default=500, ge=2)
-    min_diagnostic_evidence: StrictInt = Field(default=4, ge=0)
+    min_diagnostic_evidence: StrictInt = Field(default=32, ge=0)
     max_visit_count: StrictInt = Field(default=10, ge=1)
     reward_type: RewardType = RewardType.DEFAULT
     step_cost: StrictFloat = Field(default=0.001, ge=0.0)

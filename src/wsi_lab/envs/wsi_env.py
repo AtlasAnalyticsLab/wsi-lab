@@ -122,7 +122,7 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
         geometric_augmentation: bool = False,
         photometric_augmentation: bool = False,
         max_episode_steps: int = 500,
-        min_diagnostic_evidence: int = 4,
+        min_diagnostic_evidence: int = 32,
         max_visit_count: int = 10,
         reward_type: str = "default",
         step_cost: float = 0.001,

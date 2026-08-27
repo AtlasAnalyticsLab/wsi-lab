@@ -102,9 +102,10 @@ default 500. Its scalar observation is
 `[magnification, remaining_budget, belief, roi_x, roi_y]`; the first three
 positions retain their prior meanings and x/y are the current cell center
 normalized against the nominal edges of the snapped tissue bounding box. The
-final available action is diagnosis-only. A masked action supplied by an
-external caller is a rejected no-op with `-step_cost` and does not consume
-budget.
+final available action is diagnosis-only. Diagnosis actions become available
+after `environment.min_diagnostic_evidence` unique valid embeddings; the
+default is 32. A masked action supplied by an external caller is a rejected
+no-op with `-step_cost` and does not consume budget.
 
 `environment.start_position` controls the initial 0.625x viewport. `center`
 (the default) uses the preprocessed tissue-valid center cell. `random` samples
