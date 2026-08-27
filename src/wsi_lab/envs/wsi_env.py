@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -10,8 +11,14 @@ from typing import Any, Protocol
 import gymnasium as gym
 import numpy as np
 
-from wsi_lab.constants import BELIEF_MAGNIFICATIONS, NAVIGATION_MAGNIFICATIONS, NUM_ACTIONS
+from wsi_lab.constants import (
+    BELIEF_MAGNIFICATIONS,
+    LEVEL0_FOOTPRINTS,
+    NAVIGATION_MAGNIFICATIONS,
+    NUM_ACTIONS,
+)
 from wsi_lab.envs.actions import DIAGNOSIS_ACTIONS, NAVIGATION_ACTIONS, Action
+from wsi_lab.envs.augmentation import GeometricOrientation, HEStainAugmentation
 from wsi_lab.envs.observation import (
     OverviewTransform,
     ROIObservationTransform,
@@ -111,6 +118,9 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
         evaluation: bool = False,
         overview_size: int = 224,
         viewport_size: int = 224,
+        start_position: str = "center",
+        geometric_augmentation: bool = False,
+        photometric_augmentation: bool = False,
         max_episode_steps: int = 500,
         min_diagnostic_evidence: int = 4,
         max_visit_count: int = 10,
@@ -122,12 +132,18 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
         super().__init__()
         if render_mode not in (None, "rgb_array"):
             raise ValueError(f"Unsupported render mode: {render_mode}")
+        normalized_start_position = str(getattr(start_position, "value", start_position))
+        if normalized_start_position not in ("center", "random"):
+            raise ValueError("start_position must be 'center' or 'random'")
         self.source = source
         self.belief_state = belief or ConstantBelief()
         self.split = split
         self.evaluation = evaluation
         self.overview_size = overview_size
         self.viewport_size = viewport_size
+        self.start_position = normalized_start_position
+        self.geometric_augmentation = bool(geometric_augmentation)
+        self.photometric_augmentation = bool(photometric_augmentation)
         self.max_episode_steps = max_episode_steps
         self.min_diagnostic_evidence = min_diagnostic_evidence
         self.max_visit_count = max_visit_count
@@ -143,7 +159,15 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
         self._evaluation_index = 0
         self._slide: LoadedSlide | None = None
         self._cell: NavigationCell | None = None
+        self._augmentation_frame_size: tuple[int, int] | None = None
+        self._canonical_navigation_roi: tuple[int, int, int, int] | None = None
+        self._geometric_orientation = GeometricOrientation()
+        self._stain_augmentation = HEStainAugmentation()
+        self._geometric_random = np.random.default_rng()
+        self._photometric_random = np.random.default_rng()
+        self._canonical_observation_transform: ROIObservationTransform | None = None
         self._observation_transform: ROIObservationTransform | None = None
+        self._canonical_spatial_overview: np.ndarray | None = None
         self._spatial_overview: np.ndarray | None = None
         self._visits: np.ndarray | None = None
         self._viewport: np.ndarray | None = None
@@ -166,7 +190,7 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
 
     @property
     def observation_transform(self) -> ROIObservationTransform:
-        """The explicit global-level-0 to ROI-observation coordinate map."""
+        """Map the current agent-facing level-0 frame into the ROI observation."""
 
         if self._observation_transform is None:
             raise RuntimeError("reset() must be called before accessing the observation transform")
@@ -186,11 +210,74 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
         assert rng is not None
         return str(rng.choice(self._slide_ids))
 
+    def _select_start_cell(self) -> NavigationCell:
+        assert self._slide is not None
+        if self.start_position == "center":
+            return self._slide.cells[self._slide.start_cell_id]
+        candidates = sorted(
+            cell.cell_id
+            for cell in self._slide.cells.values()
+            if cell.magnification == NAVIGATION_MAGNIFICATIONS[0] and cell.tissue_valid
+        )
+        if not candidates:
+            raise ValueError("Slide has no tissue-valid cells at 0.625x")
+        rng = self._np_random
+        assert rng is not None
+        return self._slide.cells[int(rng.choice(candidates))]
+
+    def _sample_augmentation(self) -> None:
+        """Sample one slide-consistent augmentation for the current episode."""
+
+        assert self._slide is not None
+        coarse_footprint = LEVEL0_FOOTPRINTS[NAVIGATION_MAGNIFICATIONS[0]]
+        source_width = self._slide.overview_transform.source_width
+        source_height = self._slide.overview_transform.source_height
+        self._augmentation_frame_size = (
+            math.ceil(source_width / coarse_footprint) * coarse_footprint,
+            math.ceil(source_height / coarse_footprint) * coarse_footprint,
+        )
+        self._geometric_orientation = (
+            GeometricOrientation.sample(self._geometric_random)
+            if self.geometric_augmentation
+            else GeometricOrientation()
+        )
+        self._stain_augmentation = (
+            HEStainAugmentation.sample(self._photometric_random)
+            if self.photometric_augmentation
+            else HEStainAugmentation()
+        )
+
+    def _agent_bounds(self, bounds: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+        if self._augmentation_frame_size is None:
+            raise RuntimeError("reset() must be called before transforming coordinates")
+        width, height = self._augmentation_frame_size
+        return self._geometric_orientation.transform_bounds(bounds, width, height)
+
+    def _agent_row_column(self, cell: NavigationCell) -> tuple[int, int]:
+        if not self.geometric_augmentation:
+            return cell.row, cell.column
+        footprint = LEVEL0_FOOTPRINTS[cell.magnification]
+        x0, y0, _, _ = self._agent_bounds(cell.bounds)
+        return y0 // footprint, x0 // footprint
+
+    def _read_augmented_viewport(self, cell: NavigationCell) -> np.ndarray:
+        assert self._slide is not None
+        viewport = self.source.read_viewport(self._slide.slide_id, cell, self.viewport_size)
+        if self.geometric_augmentation:
+            viewport = self._geometric_orientation.apply_image(viewport)
+        if self.photometric_augmentation:
+            viewport = self._stain_augmentation.apply_image(viewport)
+        return np.ascontiguousarray(viewport)
+
     def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
         super().reset(seed=seed)
         if seed is not None:
             self._np_random = np.random.default_rng(seed)
+            geometric_seed, photometric_seed = np.random.SeedSequence(seed).spawn(2)
+            self._geometric_random = np.random.default_rng(geometric_seed)
+            self._photometric_random = np.random.default_rng(photometric_seed)
         self._slide = self.source.load_slide(self._select_slide_id(options))
+        self._sample_augmentation()
         if self._slide.overview.shape[:2] != (self.overview_size, self.overview_size):
             raise ValueError(
                 f"Overview has shape {self._slide.overview.shape}; expected "
@@ -203,24 +290,39 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
             self._slide.overview_transform.source_height,
         )
         roi_bounds = self._slide.navigation_roi_level0 or full_slide_bounds
+        self._canonical_navigation_roi = roi_bounds
+        augmented_roi_bounds = self._agent_bounds(roi_bounds)
         self._observation_transform = ROIObservationTransform.fit(
+            augmented_roi_bounds,
+            (self.overview_size, self.overview_size),
+        )
+        self._canonical_observation_transform = ROIObservationTransform.fit(
             roi_bounds,
             (self.overview_size, self.overview_size),
         )
-        self._spatial_overview = crop_overview_to_roi(
+        spatial_overview = crop_overview_to_roi(
             self._slide.overview,
             self._slide.overview_transform,
-            self._observation_transform,
+            self._canonical_observation_transform,
         )
-        self._cell = self._slide.cells[self._slide.start_cell_id]
+        if self.photometric_augmentation:
+            spatial_overview = self._stain_augmentation.apply_image(spatial_overview)
+        self._canonical_spatial_overview = np.ascontiguousarray(
+            spatial_overview,
+            dtype=np.uint8,
+        )
+        self._spatial_overview = (
+            self._geometric_orientation.apply_image(self._canonical_spatial_overview)
+            if self.geometric_augmentation
+            else self._canonical_spatial_overview.copy()
+        )
+        self._cell = self._select_start_cell()
         if self._cell.magnification != NAVIGATION_MAGNIFICATIONS[0]:
             raise ValueError("Start cell must be at 0.625x")
         if not self._cell.tissue_valid:
             raise ValueError("Start cell must be tissue-valid")
         self._visits = np.zeros((self.overview_size, self.overview_size), dtype=np.uint32)
-        self._viewport = self.source.read_viewport(
-            self._slide.slide_id, self._cell, self.viewport_size
-        )
+        self._viewport = self._read_augmented_viewport(self._cell)
         self._evidence.clear()
         self._actions_taken = 0
         self._terminated = False
@@ -229,12 +331,19 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
         self._revisit_count = 0
         self._magnification_histogram = Counter({f"{self._cell.magnification:g}": 1})
         self._trajectory = [self._trajectory_point(action=None)]
-        increment_visits(self._visits, self._observation_transform, self._cell.bounds)
+        increment_visits(
+            self._visits,
+            self._canonical_observation_transform,
+            self._cell.bounds,
+        )
         info = self._info()
         info["reset_visit"] = True
         return self._observation(), info
 
     def action_mask(self) -> np.ndarray:
+        return self._geometric_orientation.mask_from_canonical(self._canonical_action_mask())
+
+    def _canonical_action_mask(self) -> np.ndarray:
         mask = np.zeros(NUM_ACTIONS, dtype=np.bool_)
         if self._terminated:
             return mask
@@ -328,17 +437,21 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
 
         if selected not in NAVIGATION_ACTIONS:
             raise AssertionError(f"Unhandled action: {selected}")
-        self._cell = self._resolve_navigation(selected)
+        canonical_selected = self._geometric_orientation.to_canonical_action(selected)
+        self._cell = self._resolve_navigation(canonical_selected)
         revisited = self._cell.cell_id in self._visited_cell_ids
         if revisited:
             self._revisit_count += 1
         self._visited_cell_ids.add(self._cell.cell_id)
         self._magnification_histogram[f"{self._cell.magnification:g}"] += 1
-        self._viewport = self.source.read_viewport(
-            self._slide.slide_id, self._cell, self.viewport_size
-        )
+        self._viewport = self._read_augmented_viewport(self._cell)
         assert self._observation_transform is not None
-        increment_visits(self._visits, self._observation_transform, self._cell.bounds)
+        assert self._canonical_observation_transform is not None
+        increment_visits(
+            self._visits,
+            self._canonical_observation_transform,
+            self._cell.bounds,
+        )
         evidence_added = self._maybe_add_evidence()
         self._trajectory.append(self._trajectory_point(action=int(selected)))
         belief_after = float(self.belief_state.probability)
@@ -365,14 +478,19 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
     def _observation(self) -> dict[str, np.ndarray]:
         assert self._slide is not None and self._cell is not None
         assert self._observation_transform is not None and self._spatial_overview is not None
+        assert self._canonical_observation_transform is not None
         assert self._visits is not None and self._viewport is not None
         overview = rgb_chw_float(self._spatial_overview)
-        location = location_mask(self._observation_transform, self._cell.bounds)
+        agent_bounds = self._agent_bounds(self._cell.bounds)
+        location = location_mask(self._canonical_observation_transform, self._cell.bounds)
         visits = np.minimum(self._visits, self.max_visit_count).astype(np.float32)
+        if self.geometric_augmentation:
+            location = self._geometric_orientation.apply_image(location)
+            visits = self._geometric_orientation.apply_image(visits)
         visits /= float(self.max_visit_count)
         magnification_index = NAVIGATION_MAGNIFICATIONS.index(self._cell.magnification)
-        center_x = (self._cell.bounds[0] + self._cell.bounds[2]) / 2
-        center_y = (self._cell.bounds[1] + self._cell.bounds[3]) / 2
+        center_x = (agent_bounds[0] + agent_bounds[2]) / 2
+        center_y = (agent_bounds[1] + agent_bounds[3]) / 2
         roi_x, roi_y = self._observation_transform.global_to_normalized_point(
             center_x,
             center_y,
@@ -398,22 +516,41 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
     def _info(self) -> dict[str, Any]:
         assert self._slide is not None and self._cell is not None
         assert self._observation_transform is not None
+        assert self._augmentation_frame_size is not None
+        assert self._canonical_navigation_roi is not None
         observed_views = sum(self._magnification_histogram.values())
-        center_x = (self._cell.bounds[0] + self._cell.bounds[2]) / 2
-        center_y = (self._cell.bounds[1] + self._cell.bounds[3]) / 2
+        agent_bounds = self._agent_bounds(self._cell.bounds)
+        row, column = self._agent_row_column(self._cell)
+        center_x = (agent_bounds[0] + agent_bounds[2]) / 2
+        center_y = (agent_bounds[1] + agent_bounds[3]) / 2
         roi_x, roi_y = self._observation_transform.global_to_normalized_point(
             center_x,
             center_y,
+        )
+        augmented_frame_size = self._geometric_orientation.transformed_size(
+            *self._augmentation_frame_size
         )
         return {
             "slide_id": self._slide.slide_id,
             "label": self._slide.label,
             "cell_id": self._cell.cell_id,
+            "start_position": self.start_position,
+            "geometric_augmentation": self.geometric_augmentation,
+            "geometric_orientation": self._geometric_orientation.name,
+            "photometric_augmentation": self.photometric_augmentation,
+            "hematoxylin_scale": self._stain_augmentation.hematoxylin_scale,
+            "eosin_scale": self._stain_augmentation.eosin_scale,
+            "augmentation_frame_size_level0": augmented_frame_size,
+            "canonical_augmentation_frame_size_level0": self._augmentation_frame_size,
             "magnification": self._cell.magnification,
-            "row": self._cell.row,
-            "column": self._cell.column,
-            "cell_bounds_level0": self._cell.bounds,
+            "row": row,
+            "column": column,
+            "cell_bounds_level0": agent_bounds,
+            "canonical_row": self._cell.row,
+            "canonical_column": self._cell.column,
+            "canonical_cell_bounds_level0": self._cell.bounds,
             "navigation_roi_level0": self._observation_transform.global_bounds,
+            "canonical_navigation_roi_level0": self._canonical_navigation_roi,
             "roi_x": float(np.clip(roi_x, 0.0, 1.0)),
             "roi_y": float(np.clip(roi_y, 0.0, 1.0)),
             "belief": float(self.belief_state.probability),
@@ -429,14 +566,22 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
 
     def _trajectory_point(self, action: int | None) -> dict[str, Any]:
         assert self._cell is not None
+        assert self._augmentation_frame_size is not None
+        bounds = self._agent_bounds(self._cell.bounds)
+        row, column = self._agent_row_column(self._cell)
         return {
             "step": self._actions_taken,
             "action": action,
             "cell_id": self._cell.cell_id,
             "magnification": self._cell.magnification,
-            "row": self._cell.row,
-            "column": self._cell.column,
-            "bounds": list(self._cell.bounds),
+            "row": row,
+            "column": column,
+            "bounds": list(bounds),
+            "canonical_row": self._cell.row,
+            "canonical_column": self._cell.column,
+            "canonical_bounds": list(self._cell.bounds),
+            "geometric_orientation": self._geometric_orientation.name,
+            "canonical_augmentation_frame_size_level0": list(self._augmentation_frame_size),
             "belief": float(self.belief_state.probability),
             "evidence_count": self.evidence_count,
         }
@@ -451,17 +596,24 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
         if (
             self._slide is None
             or self._cell is None
+            or self._canonical_observation_transform is None
+            or self._canonical_spatial_overview is None
             or self._observation_transform is None
             or self._spatial_overview is None
             or self._visits is None
         ):
             raise RuntimeError("reset() must be called before render()")
-        return render_state(
-            self._spatial_overview,
-            self._observation_transform,
+        canonical = render_state(
+            self._canonical_spatial_overview,
+            self._canonical_observation_transform,
             self._cell.bounds,
             self._visits,
             self.max_visit_count,
+        )
+        return (
+            self._geometric_orientation.apply_image(canonical)
+            if self.geometric_augmentation
+            else canonical
         )
 
     def close(self) -> None:

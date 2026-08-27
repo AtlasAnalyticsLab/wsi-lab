@@ -57,7 +57,10 @@ def render_trajectory_figure(
     beliefs: list[float] = []
     steps: list[int] = []
     for point in trajectory:
-        raw_bounds = tuple(int(value) for value in point["bounds"])
+        # Runtime-augmented trajectories expose agent-facing ``bounds`` while
+        # retaining canonical bounds for plots drawn over persisted overviews.
+        bounds_value = point["canonical_bounds"] if "canonical_bounds" in point else point["bounds"]
+        raw_bounds = tuple(int(value) for value in bounds_value)
         if len(raw_bounds) != 4:
             raise ValueError(f"trajectory bounds must have four values, got {raw_bounds}")
         bounds = (raw_bounds[0], raw_bounds[1], raw_bounds[2], raw_bounds[3])

@@ -84,6 +84,33 @@ final available action is diagnosis-only. A masked action supplied by an
 external caller is a rejected no-op with `-step_cost` and does not consume
 budget.
 
+`environment.start_position` controls the initial 0.625x viewport. `center`
+(the default) uses the preprocessed tissue-valid center cell. `random` samples
+uniformly from all tissue-valid 0.625x cells on the selected slide; the sample
+is reproducible through the seed passed to `reset()`.
+
+`environment.geometric_augmentation` and
+`environment.photometric_augmentation` independently enable runtime data
+augmentation for PPO training. Both default to `false`, are sampled once per
+episode from streams derived from the environment reset seed, and are forcibly disabled for
+validation, testing, manual play, and other evaluation environments. Geometric
+augmentation uniformly samples clockwise 0/90/180/270-degree rotations, with
+or without a subsequent horizontal flip, while preserving actions relative to
+what the agent observes. Photometric augmentation independently scales the H
+and E optical-density concentrations in `[0.9, 1.1]` and applies that one
+sampled transform consistently to the episode's overview and viewports.
+Dedicated seeded augmentation streams do not consume the RNG used for slide
+selection or random starting cells, so enabling augmentation does not change
+those sequences for an otherwise identical run.
+
+Augmentation is virtual: it neither creates augmented slides, grids, nor HDF5
+files, nor changes preprocessing or belief-model fingerprints. Canonical HDF5
+feature vectors remain attached to their logical patches and are reused without
+feature extraction. Changing either option creates a distinct PPO fingerprint,
+so an augmented PPO run cannot resume from an incompatible unaugmented run. Raw
+RGB caching occurs before augmentation, allowing every episode to reuse the
+same canonical cached patches.
+
 Preprocessing computes a single level-0 bounding box around the union of all
 tissue pixels and expands it outward to the global 0.625× navigation grid. The
 box selects an aligned navigation envelope without rebasing or independently

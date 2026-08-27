@@ -36,6 +36,9 @@ tissue:
 environment:
   overview_size: 224
   viewport_size: 224
+  start_position: center
+  geometric_augmentation: false
+  photometric_augmentation: false
   max_episode_steps: 500
   min_diagnostic_evidence: 4
   max_visit_count: 10

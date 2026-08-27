@@ -71,6 +71,15 @@ ROI edges rather than full-slide dimensions. The inverse ROI mapping returns
 original level-0 coordinates. It does not alter cell IDs, grid origins,
 parent/child relationships, viewport reads, or embedding lookup coordinates.
 
+Optional training-time augmentation adds a virtual agent-facing frame without
+rewriting that canonical geometry. One episode-wide dihedral orientation
+rotates/flips the cropped overview, viewport, location, and visit rasters;
+agent-facing bounds and normalized x/y follow the same frame. Pan directions
+and zoom quadrants are inversely mapped to canonical graph edges, while cell
+IDs and HDF5 source rows remain stable. A separately sampled episode-wide H&E
+optical-density transform affects RGB only. Validation, test, manual, and
+benchmark environments stay canonical.
+
 The historical boolean action mask stays in `info` and rollout storage. It is
 generated from the cached tissue-valid navigation graph, so PPO and the manual
 controller share exactly the same pan and zoom constraints. Invalid external

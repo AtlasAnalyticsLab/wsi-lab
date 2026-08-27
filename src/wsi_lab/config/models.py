@@ -123,6 +123,9 @@ class RewardType(StrEnum):
 class EnvironmentConfig(ConfigModel):
     overview_size: StrictInt = Field(default=224, ge=16)
     viewport_size: StrictInt = Field(default=224, ge=16)
+    start_position: Literal["center", "random"] = "center"
+    geometric_augmentation: StrictBool = False
+    photometric_augmentation: StrictBool = False
     max_episode_steps: StrictInt = Field(default=500, ge=2)
     min_diagnostic_evidence: StrictInt = Field(default=4, ge=0)
     max_visit_count: StrictInt = Field(default=10, ge=1)

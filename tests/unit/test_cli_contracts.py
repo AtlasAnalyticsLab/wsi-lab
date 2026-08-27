@@ -195,6 +195,63 @@ def _fake_module(monkeypatch: pytest.MonkeyPatch, name: str, **members: object) 
     return module
 
 
+@pytest.mark.parametrize(("evaluation", "expected"), ((False, True), (True, False)))
+def test_production_environment_enables_augmentation_only_for_training(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    evaluation: bool,
+    expected: bool,
+) -> None:
+    config = _config(tmp_path)
+    config.environment.geometric_augmentation = True
+    config.environment.photometric_augmentation = True
+    split = object()
+    source = object()
+
+    class EpisodeSource:
+        @classmethod
+        def from_config(cls, *args, **kwargs):
+            del cls, args, kwargs
+            return source
+
+    class Accumulator:
+        def __init__(self, model, *, temperature) -> None:
+            del model, temperature
+
+    _fake_module(
+        monkeypatch,
+        "wsi_lab.preprocessing.pipeline",
+        ProcessedEpisodeSource=EpisodeSource,
+    )
+    _fake_module(
+        monkeypatch,
+        "wsi_lab.belief.accumulator",
+        BeliefAccumulator=Accumulator,
+    )
+    _fake_module(
+        monkeypatch,
+        "wsi_lab.envs.wsi_env",
+        WSIEnv=lambda episode_source, belief, **kwargs: {
+            "source": episode_source,
+            "belief": belief,
+            **kwargs,
+        },
+    )
+    monkeypatch.setattr(cli, "_load_verified_split", lambda _: split)
+    monkeypatch.setattr(cli, "_preprocessing_store", lambda _: object())
+    monkeypatch.setattr(cli, "_load_active_belief", lambda *_args, **_kwargs: (object(), 1.0, {}))
+
+    environment = cli._make_production_environment(
+        config,
+        split_name="train" if not evaluation else "val",
+        evaluation=evaluation,
+    )
+
+    assert environment["source"] is source
+    assert environment["geometric_augmentation"] is expected
+    assert environment["photometric_augmentation"] is expected
+
+
 @pytest.mark.parametrize(
     ("action", "expected_resume"),
     [

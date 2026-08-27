@@ -48,6 +48,20 @@ def test_training_reporting_contract_invalidates_only_ppo_algorithm(
             assert current[stage] == legacy[stage]
 
 
+@pytest.mark.parametrize("field", ("geometric_augmentation", "photometric_augmentation"))
+def test_runtime_augmentation_invalidates_only_ppo_fingerprint(tmp_path: Path, field: str) -> None:
+    config = _config(tmp_path)
+    before = stage_fingerprints(config)
+
+    setattr(config.environment, field, True)
+    after = stage_fingerprints(config)
+
+    assert before[Stage.PPO] != after[Stage.PPO]
+    for stage in Stage:
+        if stage is not Stage.PPO:
+            assert before[stage] == after[stage]
+
+
 def test_complete_manifest_skips_only_when_required_output_exists(tmp_path: Path) -> None:
     config = _config(tmp_path)
     fingerprints = stage_fingerprints(config)

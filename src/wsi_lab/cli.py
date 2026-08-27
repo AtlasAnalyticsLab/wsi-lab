@@ -237,6 +237,13 @@ def _make_production_environment(
         evaluation=evaluation,
         overview_size=config.environment.overview_size,
         viewport_size=config.environment.viewport_size,
+        start_position=config.environment.start_position,
+        geometric_augmentation=(
+            config.environment.geometric_augmentation if not evaluation else False
+        ),
+        photometric_augmentation=(
+            config.environment.photometric_augmentation if not evaluation else False
+        ),
         max_episode_steps=config.environment.max_episode_steps,
         min_diagnostic_evidence=config.environment.min_diagnostic_evidence,
         max_visit_count=config.environment.max_visit_count,

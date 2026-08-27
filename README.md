@@ -194,4 +194,11 @@ tissue-ROI edges. The current viewport still reads the selected global WSI
 cell. Navigation IDs, global patch coordinates, and embedding lookups are never
 shifted or reinterpreted by the observation crop.
 
+PPO training can optionally sample one of eight rotated/flipped virtual slide
+frames and/or one mild H&E color transform per episode. Spatial channels,
+reported coordinates, pan directions, and zoom quadrants remain aligned from
+the agent's perspective, while canonical cell IDs and embedding rows remain
+unchanged. These runtime transforms reuse the existing preprocessing and raw
+RGB caches and are disabled for validation and testing.
+
 The project repository has no license grant. Third-party terms are summarized in [THIRD_PARTY.md](docs/THIRD_PARTY.md).

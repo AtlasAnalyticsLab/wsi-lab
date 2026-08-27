@@ -39,6 +39,56 @@ def test_config_defaults_to_atlaspatch_tissue_source(tmp_path: Path) -> None:
     assert config.tissue.source is TissueSource.ATLASPATCH
 
 
+def test_config_defaults_to_center_start_position(tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text("dataset:\n  root: /tmp/data\n")
+
+    config = load_config(path)
+
+    assert config.environment.start_position == "center"
+
+
+def test_config_defaults_to_disabled_augmentation(tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text("dataset:\n  root: /tmp/data\n")
+
+    config = load_config(path)
+
+    assert config.environment.geometric_augmentation is False
+    assert config.environment.photometric_augmentation is False
+
+
+@pytest.mark.parametrize("field", ("geometric_augmentation", "photometric_augmentation"))
+def test_config_accepts_enabled_augmentation(tmp_path: Path, field: str) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(f"dataset:\n  root: /tmp/data\nenvironment:\n  {field}: true\n")
+
+    config = load_config(path)
+
+    assert getattr(config.environment, field) is True
+
+
+@pytest.mark.parametrize("field", ("geometric_augmentation", "photometric_augmentation"))
+def test_config_rejects_coerced_augmentation_flags(tmp_path: Path, field: str) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(f"dataset:\n  root: /tmp/data\nenvironment:\n  {field}: 'true'\n")
+
+    with pytest.raises(ConfigurationError, match=field):
+        load_config(path)
+
+
+@pytest.mark.parametrize("start_position", ("center", "random"))
+def test_config_accepts_start_position(tmp_path: Path, start_position: str) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        f"dataset:\n  root: /tmp/data\nenvironment:\n  start_position: {start_position}\n"
+    )
+
+    config = load_config(path)
+
+    assert config.environment.start_position == start_position
+
+
 @pytest.mark.parametrize("source", tuple(TissueSource))
 def test_config_accepts_each_tissue_source(tmp_path: Path, source: TissueSource) -> None:
     path = tmp_path / "config.yaml"

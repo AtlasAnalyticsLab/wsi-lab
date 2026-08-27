@@ -62,6 +62,7 @@ slurm-*.out
 
 # Project-local test scripts and their result files
 scripts/local_tests/
+/benchmarks/
 
 # Model checkpoints and exported weights
 *.pt
