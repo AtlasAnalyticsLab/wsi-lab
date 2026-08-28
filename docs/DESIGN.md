@@ -132,20 +132,29 @@ and the new attempt selects from scratch.
 
 After a successful `train-rl` or `run`, a separate final test pass is enabled
 by default. It explicitly authorizes test preprocessing, evaluates all official
-test slides exactly once, prefers `best_validation.pt`, and warns before
-falling back to the latest compatible regular checkpoint if no validation
-winner exists. `--no-final-test-eval` disables the pass, and dry-run mode never
-performs it. The result is written to `evaluation_ppo_test.json`; numeric
-aggregates are also logged under `test/*`, and the JSON identifies the resolved
-checkpoint, its training step, dependencies, and embedded validation record.
+test slides exactly once per available checkpoint role, and reports
+`best_validation.pt` independently from the newest compatible regular
+checkpoint. A missing or invalid best checkpoint is marked unavailable and
+does not suppress the latest result. `--no-final-test-eval` disables the pass,
+and dry-run mode never performs it. The two-entry result is written to
+`evaluation_ppo_test.json`; numeric aggregates are logged under
+`test/best_validation/*` and `test/latest/*`, and each entry identifies the
+resolved checkpoint, its training step, dependencies, and embedded validation
+record.
+
+Standalone `eval-rl --split test --allow-test` uses the same comparison. It
+scans atomic regular checkpoints directly rather than requiring a complete PPO
+manifest, so the latest compatible checkpoint from interrupted training remains
+evaluable. A saved run-local configuration selects its parent run, with
+`--run-dir` available as an explicit override.
 
 This post-training sequence is one-way:
 
 ```text
-train PPO -> validate/select checkpoint -> freeze selected weights -> evaluate test
+train PPO -> validate/select best + save latest -> freeze both roles -> evaluate test
 ```
 
-Test labels, rewards, predictions, and metrics cannot update the policy, choose
-the checkpoint, change a stage fingerprint, or enter resume compatibility. Test
-navigation artifacts are recorded separately in
+Test labels, rewards, predictions, and metrics cannot update either policy,
+select between the two checkpoint roles, change a stage fingerprint, or enter
+resume compatibility. Test navigation artifacts are recorded separately in
 `test_evaluation_preprocessing.json` with `training_dependency: false`.

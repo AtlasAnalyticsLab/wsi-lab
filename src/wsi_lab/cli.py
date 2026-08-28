@@ -840,14 +840,46 @@ def _evaluate_belief_command(
     return {"output": str(output), **value}
 
 
-def _load_ppo_model(config: AppConfig, checkpoint_path: str | Path | None = None):
+def _resolved_ppo_run_directory(config: AppConfig, run_directory: str | Path | None = None) -> Path:
+    if run_directory is not None:
+        return Path(run_directory).expanduser().resolve()
+    fingerprints = stage_fingerprints(config)
+    return artifact_paths(config, fingerprints)[Stage.PPO].parent
+
+
+def _saved_ppo_run_directory(config_path: str | Path) -> Path | None:
+    """Recognize a run-local config snapshot without requiring a complete run."""
+
+    source = Path(config_path).expanduser().resolve()
+    candidate = source.parent
+    manifest_path = candidate / "manifest.json"
+    if source.name != "config.yaml" or not (candidate / "checkpoints").is_dir():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(manifest, Mapping):
+        return None
+    if manifest.get("artifact_type") != Stage.PPO.value:
+        return None
+    if manifest.get("fingerprint") != candidate.name:
+        return None
+    return candidate
+
+
+def _load_ppo_model(
+    config: AppConfig,
+    checkpoint_path: str | Path | None = None,
+    *,
+    run_directory: str | Path | None = None,
+):
     from wsi_lab.rl.checkpoints import checkpoint_candidates, load_ppo_checkpoint
     from wsi_lab.rl.networks import RecurrentActorCritic
     from wsi_lab.rl.recurrent_ppo import PPOConfig
     from wsi_lab.rl.trainer import RESUME_CONFIG_FIELDS, resolve_device
 
-    fingerprints = stage_fingerprints(config)
-    directory = artifact_paths(config, fingerprints)[Stage.PPO].parent / "checkpoints"
+    directory = _resolved_ppo_run_directory(config, run_directory) / "checkpoints"
     candidates = (
         [Path(checkpoint_path).expanduser().resolve()]
         if checkpoint_path is not None
@@ -877,6 +909,76 @@ def _load_ppo_model(config: AppConfig, checkpoint_path: str | Path | None = None
     raise ValueError("no compatible PPO checkpoint found: " + "; ".join(failures))
 
 
+def _evaluate_ppo_checkpoint(
+    config: AppConfig,
+    split_name: SplitName,
+    allow_test: bool,
+    *,
+    episodes: int,
+    checkpoint_path: str | Path | None,
+    checkpoint_selection: str,
+    run_directory: Path,
+) -> dict[str, Any]:
+    from wsi_lab.rl.evaluation import evaluate_policy
+    from wsi_lab.rl.trainer import resolve_device
+
+    model, loaded = _load_ppo_model(
+        config,
+        checkpoint_path=checkpoint_path,
+        run_directory=run_directory,
+    )
+    environment = _make_production_environment(
+        config,
+        split_name=split_name,
+        evaluation=True,
+        allow_test=allow_test,
+    )
+    try:
+        evaluation = evaluate_policy(
+            model,
+            environment,
+            episodes=episodes,
+            device=resolve_device(config.rl.device),
+            seed=config.rl.seed,
+        )
+    finally:
+        environment.close()
+
+    checkpoint = str(loaded.path)
+    embedded_best = loaded.extra.get("best_validation")
+    best_validation = dict(embedded_best) if isinstance(embedded_best, Mapping) else None
+    value = evaluation.to_dict()
+    value["checkpoint_selection"] = checkpoint_selection
+    value["checkpoint_global_step"] = loaded.global_step
+    value["checkpoint_path"] = checkpoint
+    value["checkpoint_provenance"] = {
+        "path": checkpoint,
+        "global_step": loaded.global_step,
+        "selection": checkpoint_selection,
+        "dependencies": dict(loaded.dependencies),
+        "best_validation": best_validation,
+    }
+    return value
+
+
+def _unavailable_checkpoint_evaluation(
+    checkpoint_selection: str,
+    *,
+    checkpoint_path: Path | None,
+    reason: str,
+    error: str,
+) -> dict[str, Any]:
+    return {
+        "status": "unavailable",
+        "checkpoint_selection": checkpoint_selection,
+        "checkpoint_global_step": None,
+        "checkpoint_path": str(checkpoint_path) if checkpoint_path is not None else None,
+        "checkpoint_provenance": None,
+        "reason": reason,
+        "error": error,
+    }
+
+
 def _evaluate_rl_command(
     config: AppConfig,
     split_name: SplitName,
@@ -886,139 +988,171 @@ def _evaluate_rl_command(
     fixed_budget: int = 128,
     confidence_threshold: float = 0.9,
     checkpoint_path: str | Path | None = None,
-    checkpoint_selection: str = "latest",
+    checkpoint_selection: str = "auto",
+    run_directory: str | Path | None = None,
 ) -> dict[str, Any]:
     _ensure_test_access(split_name, allow_test)
-    from wsi_lab.rl.evaluation import evaluate_baseline, evaluate_policy
+    from wsi_lab.rl.evaluation import evaluate_baseline
 
     test_preprocessing = (
         _prepare_authorized_test_preprocessing(config) if split_name == "test" else None
     )
-    environment = _make_production_environment(
-        config,
-        split_name=split_name,
-        evaluation=True,
-        allow_test=allow_test,
-    )
     split = _load_verified_split(config)
+    episodes = len(split.ids(split_name))
+    resolved_run_directory = _resolved_ppo_run_directory(config, run_directory)
     checkpoint: str | None = None
-    checkpoint_global_step: int | None = None
-    checkpoint_dependencies: dict[str, str] = {}
-    checkpoint_best_validation: dict[str, Any] | None = None
-    try:
-        if policy_name == "ppo":
-            from wsi_lab.rl.trainer import resolve_device
+    comparison = (
+        policy_name == "ppo"
+        and split_name == "test"
+        and checkpoint_path is None
+        and checkpoint_selection == "auto"
+    )
+    if comparison:
+        checkpoint_directory = resolved_run_directory / "checkpoints"
+        best_checkpoint = (checkpoint_directory / "best_validation.pt").resolve()
 
-            model, loaded = _load_ppo_model(config, checkpoint_path=checkpoint_path)
-            checkpoint = str(loaded.path)
-            checkpoint_global_step = loaded.global_step
-            checkpoint_dependencies = dict(loaded.dependencies)
-            embedded_best = loaded.extra.get("best_validation")
-            if isinstance(embedded_best, Mapping):
-                checkpoint_best_validation = dict(embedded_best)
-            evaluation = evaluate_policy(
-                model,
-                environment,
-                episodes=len(split.ids(split_name)),
-                device=resolve_device(config.rl.device),
-                seed=config.rl.seed,
-            )
-        else:
-            from wsi_lab.baselines import (
-                BaselinePolicy,
-                ConfidenceThresholdPolicy,
-                FixedBudgetPolicy,
-                RandomPolicy,
-                RasterPolicy,
-            )
-
-            policies: dict[str, Callable[[], BaselinePolicy]] = {
-                "random": lambda: RandomPolicy(seed=config.rl.seed),
-                "raster": RasterPolicy,
-                "fixed-budget": lambda: FixedBudgetPolicy(
-                    fixed_budget,
-                    navigation_policy=RandomPolicy(seed=config.rl.seed),
-                ),
-                "confidence": lambda: ConfidenceThresholdPolicy(
-                    confidence_threshold,
-                    navigation_policy=RandomPolicy(seed=config.rl.seed),
-                ),
-            }
+        def attempt(selection: str, selected_path: Path | None) -> dict[str, Any]:
             try:
-                baseline = policies[policy_name]()
-            except KeyError as exc:
-                raise ValueError(f"unknown RL evaluation policy: {policy_name}") from exc
+                evaluated = _evaluate_ppo_checkpoint(
+                    config,
+                    split_name,
+                    allow_test,
+                    episodes=episodes,
+                    checkpoint_path=selected_path,
+                    checkpoint_selection=selection,
+                    run_directory=resolved_run_directory,
+                )
+            except (OSError, RuntimeError, ValueError) as exc:
+                LOGGER.warning("Could not evaluate %s PPO checkpoint: %s", selection, exc)
+                return _unavailable_checkpoint_evaluation(
+                    selection,
+                    checkpoint_path=selected_path,
+                    reason="checkpoint_unavailable",
+                    error=str(exc),
+                )
+            return {"status": "complete", **evaluated}
+
+        # Evaluate latest first so an unusable best-validation artifact can
+        # never suppress the interrupted-run result explicitly requested here.
+        latest_evaluation = attempt("latest", None)
+        if best_checkpoint.is_file():
+            best_evaluation = attempt("best_validation", best_checkpoint)
+        else:
+            best_evaluation = _unavailable_checkpoint_evaluation(
+                "best_validation",
+                checkpoint_path=best_checkpoint,
+                reason="checkpoint_not_found",
+                error=f"best-validation checkpoint does not exist: {best_checkpoint}",
+            )
+
+        evaluations = {
+            "best_validation": best_evaluation,
+            "latest": latest_evaluation,
+        }
+        if not any(item["status"] == "complete" for item in evaluations.values()):
+            failures = "; ".join(f"{name}: {item['error']}" for name, item in evaluations.items())
+            raise FileNotFoundError(f"no evaluable PPO test checkpoint found ({failures})")
+        value: dict[str, Any] = {
+            "schema_version": 2,
+            "policy": "ppo",
+            "split": "test",
+            "evaluations": evaluations,
+        }
+    elif policy_name == "ppo":
+        if checkpoint_selection == "auto":
+            selection = "explicit" if checkpoint_path is not None else "latest"
+        else:
+            selection = checkpoint_selection
+        value = _evaluate_ppo_checkpoint(
+            config,
+            split_name,
+            allow_test,
+            episodes=episodes,
+            checkpoint_path=checkpoint_path,
+            checkpoint_selection=selection,
+            run_directory=resolved_run_directory,
+        )
+        checkpoint = str(value["checkpoint_path"])
+    else:
+        from wsi_lab.baselines import (
+            BaselinePolicy,
+            ConfidenceThresholdPolicy,
+            FixedBudgetPolicy,
+            RandomPolicy,
+            RasterPolicy,
+        )
+
+        policies: dict[str, Callable[[], BaselinePolicy]] = {
+            "random": lambda: RandomPolicy(seed=config.rl.seed),
+            "raster": RasterPolicy,
+            "fixed-budget": lambda: FixedBudgetPolicy(
+                fixed_budget,
+                navigation_policy=RandomPolicy(seed=config.rl.seed),
+            ),
+            "confidence": lambda: ConfidenceThresholdPolicy(
+                confidence_threshold,
+                navigation_policy=RandomPolicy(seed=config.rl.seed),
+            ),
+        }
+        try:
+            baseline = policies[policy_name]()
+        except KeyError as exc:
+            raise ValueError(f"unknown RL evaluation policy: {policy_name}") from exc
+        environment = _make_production_environment(
+            config,
+            split_name=split_name,
+            evaluation=True,
+            allow_test=allow_test,
+        )
+        try:
             evaluation = evaluate_baseline(
                 baseline,
                 environment,
-                episodes=len(split.ids(split_name)),
+                episodes=episodes,
                 seed=config.rl.seed,
             )
-    finally:
-        environment.close()
-    fingerprints = stage_fingerprints(config)
-    output = (
-        artifact_paths(config, fingerprints)[Stage.PPO].parent
-        / f"evaluation_{policy_name}_{split_name}.json"
-    )
-    value = evaluation.to_dict()
-    if policy_name == "ppo":
-        value["checkpoint_selection"] = checkpoint_selection
-        value["checkpoint_global_step"] = checkpoint_global_step
-        value["checkpoint_path"] = checkpoint
-        value["checkpoint_provenance"] = {
-            "path": checkpoint,
-            "global_step": checkpoint_global_step,
-            "selection": checkpoint_selection,
-            "dependencies": checkpoint_dependencies,
-            "best_validation": checkpoint_best_validation,
-        }
+        finally:
+            environment.close()
+        value = evaluation.to_dict()
+
+    output = resolved_run_directory / f"evaluation_{policy_name}_{split_name}.json"
     atomic_json_dump(output, value)
-    result = {
-        "output": str(output),
-        "policy": policy_name,
-        "checkpoint": checkpoint,
-        **value,
-    }
+    result = {"output": str(output), "policy": policy_name, **value}
+    if not comparison:
+        result["checkpoint"] = checkpoint
     if test_preprocessing is not None:
         result["test_preprocessing"] = test_preprocessing
     return result
 
 
 def _automatic_final_test_evaluation(config: AppConfig) -> dict[str, Any]:
-    """Run the guarded final test evaluation, preferring the validation winner."""
+    """Run the guarded best-versus-latest final test report."""
 
     fingerprints = stage_fingerprints(config)
     run_dir = artifact_paths(config, fingerprints)[Stage.PPO].parent
-    best_checkpoint = run_dir / "checkpoints" / "best_validation.pt"
-    if best_checkpoint.is_file():
-        checkpoint_path: Path | None = best_checkpoint
-        selection = "best_validation"
-    else:
-        checkpoint_path = None
-        selection = "latest_final_fallback"
-        LOGGER.warning(
-            "No best-validation checkpoint exists; final test evaluation will use "
-            "the latest compatible checkpoint"
-        )
     result = _evaluate_rl_command(
         config,
         "test",
         allow_test=True,
-        checkpoint_path=checkpoint_path,
-        checkpoint_selection=selection,
+        run_directory=run_dir,
     )
     if config.logging.tensorboard:
         from torch.utils.tensorboard import SummaryWriter
 
         writer = SummaryWriter(log_dir=str(run_dir / "tensorboard"))
         try:
-            global_step = int(result.get("checkpoint_global_step") or 0)
-            metrics = result.get("metrics")
-            if isinstance(metrics, Mapping):
-                for name, value in metrics.items():
-                    if isinstance(value, (int, float)) and not isinstance(value, bool):
-                        writer.add_scalar(f"test/{name}", value, global_step)
+            evaluations = result.get("evaluations")
+            if isinstance(evaluations, Mapping):
+                for selection, evaluated in evaluations.items():
+                    if not isinstance(evaluated, Mapping) or evaluated.get("status") != "complete":
+                        continue
+                    global_step = int(evaluated.get("checkpoint_global_step") or 0)
+                    metrics = evaluated.get("metrics")
+                    if not isinstance(metrics, Mapping):
+                        continue
+                    for name, value in metrics.items():
+                        if isinstance(value, (int, float)) and not isinstance(value, bool):
+                            writer.add_scalar(f"test/{selection}/{name}", value, global_step)
         finally:
             writer.close()
     return result
@@ -1170,6 +1304,14 @@ def build_parser() -> argparse.ArgumentParser:
                 choices=("ppo", "random", "raster", "fixed-budget", "confidence"),
                 default="ppo",
             )
+            command.add_argument(
+                "--run-dir",
+                type=Path,
+                help=(
+                    "PPO run directory containing checkpoints; a recognized run-local "
+                    "config.yaml uses its parent automatically"
+                ),
+            )
             command.add_argument("--fixed-budget", type=int, default=128)
             command.add_argument("--confidence-threshold", type=float, default=0.9)
     render = commands.add_parser("render-trajectory")
@@ -1206,6 +1348,7 @@ def _dispatch(arguments: argparse.Namespace) -> int:
         )
         return 0
     if arguments.command == "eval-rl":
+        run_directory = arguments.run_dir or _saved_ppo_run_directory(arguments.config)
         print(
             json.dumps(
                 _evaluate_rl_command(
@@ -1215,6 +1358,7 @@ def _dispatch(arguments: argparse.Namespace) -> int:
                     policy_name=arguments.policy,
                     fixed_budget=arguments.fixed_budget,
                     confidence_threshold=arguments.confidence_threshold,
+                    run_directory=run_directory,
                 ),
                 indent=2,
             )

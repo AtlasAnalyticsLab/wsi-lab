@@ -154,6 +154,48 @@ def test_rl_pipeline_commands_enable_final_test_evaluation_by_default(command: s
     assert disabled.final_test_eval is False
 
 
+def test_eval_rl_infers_incomplete_run_from_saved_config_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = tmp_path / ("a" * 64)
+    (run_dir / "checkpoints").mkdir(parents=True)
+    config_path = run_dir / "config.yaml"
+    config_path.write_text("workspace: {}\n", encoding="utf-8")
+    atomic_json_dump(
+        run_dir / "manifest.json",
+        {
+            "artifact_type": "ppo",
+            "fingerprint": run_dir.name,
+            "status": "incomplete",
+        },
+    )
+    captured: dict[str, Any] = {}
+
+    def evaluate(*args, **kwargs) -> dict[str, str]:
+        captured.update(args=args, kwargs=kwargs)
+        return {"status": "mocked"}
+
+    monkeypatch.setattr(cli, "load_config", lambda _: object())
+    monkeypatch.setattr(cli, "_evaluate_rl_command", evaluate)
+    arguments = cli.build_parser().parse_args(
+        ("eval-rl", "--config", str(config_path), "--split", "test", "--allow-test")
+    )
+
+    assert cli._dispatch(arguments) == 0
+    assert captured["kwargs"]["run_directory"] == run_dir.resolve()
+
+
+def test_eval_rl_explicit_run_directory_overrides_saved_config_parent(tmp_path: Path) -> None:
+    parser = cli.build_parser()
+    explicit = tmp_path / "chosen-run"
+
+    arguments = parser.parse_args(
+        ("eval-rl", "--config", "config.yaml", "--run-dir", str(explicit))
+    )
+
+    assert arguments.run_dir == explicit
+
+
 def test_belief_data_stage_passes_only_development_ids_and_disables_wsi_access(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -348,7 +390,12 @@ def test_ppo_stage_resumes_only_for_explicit_resume_decision(
         def close(self) -> None:
             pass
 
-    _fake_module(monkeypatch, "wsi_lab.rl.evaluation", evaluate_policy=object())
+    _fake_module(
+        monkeypatch,
+        "wsi_lab.rl.evaluation",
+        evaluate_baseline=object(),
+        evaluate_policy=object(),
+    )
     _fake_module(
         monkeypatch,
         "wsi_lab.rl.networks",
@@ -441,7 +488,10 @@ def test_ppo_validation_tracks_and_records_the_best_checkpoint(
         BestValidationCheckpointTracker=Tracker,
     )
     _fake_module(
-        monkeypatch, "wsi_lab.rl.evaluation", evaluate_policy=lambda *_args, **_kw: evaluation
+        monkeypatch,
+        "wsi_lab.rl.evaluation",
+        evaluate_baseline=object(),
+        evaluate_policy=lambda *_args, **_kw: evaluation,
     )
     _fake_module(monkeypatch, "wsi_lab.rl.networks", RecurrentActorCritic=Model)
     _fake_module(
@@ -478,8 +528,14 @@ def test_ppo_checkpoint_load_resolves_auto_before_passing_map_location(
 ) -> None:
     config = _config(tmp_path)
     config.rl.device = "auto"
-    checkpoint = tmp_path / "checkpoint_000000000008.pt"
+    run_dir = tmp_path / "incomplete-run"
+    checkpoint = run_dir / "checkpoints" / "checkpoint_000000000008.pt"
+    checkpoint.parent.mkdir(parents=True)
     checkpoint.touch()
+    atomic_json_dump(
+        run_dir / "manifest.json",
+        {"artifact_type": "ppo", "fingerprint": "incomplete-run", "status": "incomplete"},
+    )
     loaded = SimpleNamespace(path=checkpoint)
     captured: dict[str, Any] = {}
 
@@ -498,10 +554,15 @@ def test_ppo_checkpoint_load_resolves_auto_before_passing_map_location(
             return ConvertedConfig()
 
     model = object()
+
+    def candidates(directory: Path) -> list[Path]:
+        captured["checkpoint_directory"] = directory
+        return [checkpoint]
+
     _fake_module(
         monkeypatch,
         "wsi_lab.rl.checkpoints",
-        checkpoint_candidates=lambda _: [checkpoint],
+        checkpoint_candidates=candidates,
         load_ppo_checkpoint=load,
     )
     _fake_module(
@@ -520,38 +581,22 @@ def test_ppo_checkpoint_load_resolves_auto_before_passing_map_location(
         RESUME_CONFIG_FIELDS=(),
         resolve_device=lambda requested: f"resolved:{requested}",
     )
-    monkeypatch.setattr(cli, "stage_fingerprints", lambda _: {Stage.PPO: "ppo"})
-    monkeypatch.setattr(
-        cli,
-        "artifact_paths",
-        lambda *_: {Stage.PPO: tmp_path / "run" / "manifest.json"},
-    )
     monkeypatch.setattr(cli, "_ppo_dependencies", lambda _: {})
 
-    observed_model, observed_loaded = cli._load_ppo_model(config)
+    observed_model, observed_loaded = cli._load_ppo_model(config, run_directory=run_dir)
 
     assert observed_model is model
     assert observed_loaded is loaded
+    assert captured["checkpoint_directory"] == checkpoint.parent.resolve()
     assert captured["map_location"] == "resolved:auto"
 
 
-@pytest.mark.parametrize(
-    ("has_best", "expected_selection"),
-    [(True, "best_validation"), (False, "latest_final_fallback")],
-)
-def test_automatic_final_test_evaluation_prefers_best_validation_checkpoint(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    has_best: bool,
-    expected_selection: str,
+def test_automatic_final_test_evaluation_requests_best_and_latest_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = _config(tmp_path)
     config.logging.tensorboard = False
     run_dir = tmp_path / "run"
-    best = run_dir / "checkpoints" / "best_validation.pt"
-    if has_best:
-        best.parent.mkdir(parents=True)
-        best.touch()
     captured: dict[str, Any] = {}
 
     monkeypatch.setattr(cli, "stage_fingerprints", lambda _: {Stage.PPO: "ppo"})
@@ -563,17 +608,23 @@ def test_automatic_final_test_evaluation_prefers_best_validation_checkpoint(
 
     def evaluate(*args, **kwargs):
         captured.update(args=args, kwargs=kwargs)
-        return {"metrics": {"accuracy": 1.0}}
+        return {
+            "evaluations": {
+                "best_validation": {"status": "complete", "metrics": {"accuracy": 1.0}},
+                "latest": {"status": "complete", "metrics": {"accuracy": 0.5}},
+            }
+        }
 
     monkeypatch.setattr(cli, "_evaluate_rl_command", evaluate)
 
     result = cli._automatic_final_test_evaluation(config)
 
-    assert result == {"metrics": {"accuracy": 1.0}}
+    assert set(result["evaluations"]) == {"best_validation", "latest"}
     assert captured["args"][1:] == ("test",)
     assert captured["kwargs"]["allow_test"] is True
-    assert captured["kwargs"]["checkpoint_selection"] == expected_selection
-    assert captured["kwargs"]["checkpoint_path"] == (best.resolve() if has_best else None)
+    assert captured["kwargs"]["run_directory"] == run_dir
+    assert "checkpoint_selection" not in captured["kwargs"]
+    assert "checkpoint_path" not in captured["kwargs"]
 
 
 def test_automatic_final_test_evaluation_logs_numeric_test_metrics(
@@ -609,12 +660,22 @@ def test_automatic_final_test_evaluation_logs_numeric_test_metrics(
         cli,
         "_evaluate_rl_command",
         lambda *_args, **_kwargs: {
-            "checkpoint_global_step": 1234,
-            "metrics": {
-                "accuracy": 0.75,
-                "auroc": 0.81,
-                "has_both_classes": True,
-                "magnification_usage": {"20": 9},
+            "evaluations": {
+                "best_validation": {
+                    "status": "complete",
+                    "checkpoint_global_step": 1234,
+                    "metrics": {
+                        "accuracy": 0.75,
+                        "auroc": 0.81,
+                        "has_both_classes": True,
+                        "magnification_usage": {"20": 9},
+                    },
+                },
+                "latest": {
+                    "status": "complete",
+                    "checkpoint_global_step": 5678,
+                    "metrics": {"accuracy": 0.7, "auroc": 0.79},
+                },
             },
         },
     )
@@ -624,10 +685,177 @@ def test_automatic_final_test_evaluation_logs_numeric_test_metrics(
 
     assert captured["log_dir"] == str(run_dir / "tensorboard")
     assert captured["events"] == [
-        ("test/accuracy", 0.75, 1234),
-        ("test/auroc", 0.81, 1234),
+        ("test/best_validation/accuracy", 0.75, 1234),
+        ("test/best_validation/auroc", 0.81, 1234),
+        ("test/latest/accuracy", 0.7, 5678),
+        ("test/latest/auroc", 0.79, 5678),
     ]
     assert captured["closed"] is True
+
+
+def test_ppo_test_evaluation_reports_best_and_latest_in_one_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    run_dir = tmp_path / "run"
+    checkpoint_dir = run_dir / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    best = (checkpoint_dir / "best_validation.pt").resolve()
+    latest = (checkpoint_dir / "checkpoint_000000000016.pt").resolve()
+    best.touch()
+    latest.touch()
+    calls: list[tuple[str, Path | None]] = []
+    preprocessing_calls = 0
+
+    def preprocess(_config: AppConfig) -> dict[str, str]:
+        nonlocal preprocessing_calls
+        preprocessing_calls += 1
+        return {"status": "complete"}
+
+    def evaluate(*_args, **kwargs) -> dict[str, Any]:
+        selection = str(kwargs["checkpoint_selection"])
+        selected_path = kwargs["checkpoint_path"]
+        calls.append((selection, selected_path))
+        path = best if selection == "best_validation" else latest
+        step = 8 if selection == "best_validation" else 16
+        return {
+            "episodes": [{"slide_id": f"{selection}-slide"}],
+            "metrics": {"accuracy": 0.8 if selection == "best_validation" else 0.7},
+            "checkpoint_selection": selection,
+            "checkpoint_global_step": step,
+            "checkpoint_path": str(path),
+            "checkpoint_provenance": {
+                "path": str(path),
+                "global_step": step,
+                "selection": selection,
+                "dependencies": {},
+                "best_validation": None,
+            },
+        }
+
+    monkeypatch.setattr(cli, "_prepare_authorized_test_preprocessing", preprocess)
+    monkeypatch.setattr(
+        cli,
+        "_load_verified_split",
+        lambda _: SimpleNamespace(ids=lambda _split_name: ("slide-a", "slide-b")),
+    )
+    monkeypatch.setattr(cli, "_evaluate_ppo_checkpoint", evaluate)
+
+    result = cli._evaluate_rl_command(
+        config,
+        "test",
+        allow_test=True,
+        run_directory=run_dir,
+    )
+
+    assert preprocessing_calls == 1
+    assert calls == [("latest", None), ("best_validation", best)]
+    assert result["schema_version"] == 2
+    assert result["split"] == "test"
+    assert result["evaluations"]["best_validation"]["status"] == "complete"
+    assert result["evaluations"]["best_validation"]["metrics"]["accuracy"] == 0.8
+    assert result["evaluations"]["latest"]["status"] == "complete"
+    assert result["evaluations"]["latest"]["metrics"]["accuracy"] == 0.7
+
+    persisted = json.loads((run_dir / "evaluation_ppo_test.json").read_text(encoding="utf-8"))
+    assert persisted == {
+        "schema_version": 2,
+        "policy": "ppo",
+        "split": "test",
+        "evaluations": result["evaluations"],
+    }
+
+
+def test_ppo_validation_evaluation_remains_latest_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    run_dir = tmp_path / "run"
+    calls: list[dict[str, Any]] = []
+
+    def evaluate(*_args, **kwargs) -> dict[str, Any]:
+        calls.append(kwargs)
+        return {
+            "episodes": [],
+            "metrics": {"accuracy": 0.75},
+            "checkpoint_selection": kwargs["checkpoint_selection"],
+            "checkpoint_global_step": 16,
+            "checkpoint_path": str(run_dir / "checkpoints/checkpoint_000000000016.pt"),
+            "checkpoint_provenance": {},
+        }
+
+    monkeypatch.setattr(
+        cli,
+        "_load_verified_split",
+        lambda _: SimpleNamespace(ids=lambda _split_name: ("slide-a",)),
+    )
+    monkeypatch.setattr(cli, "_evaluate_ppo_checkpoint", evaluate)
+
+    result = cli._evaluate_rl_command(
+        config,
+        "val",
+        allow_test=False,
+        run_directory=run_dir,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["checkpoint_path"] is None
+    assert calls[0]["checkpoint_selection"] == "latest"
+    assert "evaluations" not in result
+    assert result["metrics"]["accuracy"] == 0.75
+
+
+@pytest.mark.parametrize("best_exists", (False, True))
+def test_unavailable_best_checkpoint_does_not_suppress_latest_test_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    best_exists: bool,
+) -> None:
+    config = _config(tmp_path)
+    run_dir = tmp_path / "run"
+    checkpoint_dir = run_dir / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    best = (checkpoint_dir / "best_validation.pt").resolve()
+    if best_exists:
+        best.write_bytes(b"corrupt")
+
+    def evaluate(*_args, **kwargs) -> dict[str, Any]:
+        selection = str(kwargs["checkpoint_selection"])
+        if selection == "best_validation":
+            raise ValueError("corrupt best checkpoint")
+        return {
+            "episodes": [],
+            "metrics": {"accuracy": 0.625},
+            "checkpoint_selection": "latest",
+            "checkpoint_global_step": 24,
+            "checkpoint_path": str(checkpoint_dir / "checkpoint_000000000024.pt"),
+            "checkpoint_provenance": {},
+        }
+
+    monkeypatch.setattr(
+        cli, "_prepare_authorized_test_preprocessing", lambda _: {"status": "complete"}
+    )
+    monkeypatch.setattr(
+        cli,
+        "_load_verified_split",
+        lambda _: SimpleNamespace(ids=lambda _split_name: ("slide-a",)),
+    )
+    monkeypatch.setattr(cli, "_evaluate_ppo_checkpoint", evaluate)
+
+    result = cli._evaluate_rl_command(
+        config,
+        "test",
+        allow_test=True,
+        run_directory=run_dir,
+    )
+
+    best_result = result["evaluations"]["best_validation"]
+    assert best_result["status"] == "unavailable"
+    assert best_result["reason"] == (
+        "checkpoint_unavailable" if best_exists else "checkpoint_not_found"
+    )
+    assert result["evaluations"]["latest"]["status"] == "complete"
+    assert result["evaluations"]["latest"]["checkpoint_global_step"] == 24
 
 
 def test_ppo_evaluation_persists_resolved_checkpoint_provenance(

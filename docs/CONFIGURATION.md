@@ -77,6 +77,15 @@ Standalone evaluation defaults to `val`. Direct access to `test` requires both
 `--split test` and `--allow-test`. Training and calibration APIs reject test
 records unconditionally.
 
+An authorized PPO test evaluation reports two checkpoint roles independently:
+`checkpoints/best_validation.pt`, when available, and the newest compatible
+regular `checkpoint_*.pt`. The regular checkpoint scan does not require a
+complete PPO manifest, so `eval-rl` can report the latest atomic checkpoint
+left by interrupted training. A missing or incompatible best checkpoint is
+reported as unavailable and is never replaced or mislabeled with the latest
+checkpoint. A saved `<run>/config.yaml` selects its parent run automatically;
+`eval-rl --run-dir RUN` provides an explicit override.
+
 The preprocessing and training pipeline stages materialize only the persisted
 train and validation partitions and do not open guarded test HDF5 payloads or
 WSI pixels. Planning may stat source inventory paths, sizes, and modification
@@ -179,7 +188,8 @@ directory records:
 | `training/completed_episodes` | Cumulative completed training episodes, emitted each rollout |
 | `training/learning_rate` | Optimizer learning rate used for the completed PPO update |
 | `validation/*` | Aggregate deterministic validation metrics plus `validation/is_best_checkpoint` and `validation/best_selection_value` |
-| `test/*` | Aggregate metrics from the automatic final test evaluation |
+| `test/best_validation/*` | Aggregate final-test metrics for the validation winner |
+| `test/latest/*` | Aggregate final-test metrics for the newest compatible regular checkpoint |
 
 Per-worker return and length accumulators continue across rollout boundaries.
 Regular checkpoints preserve the cumulative completed-episode count. Because
@@ -205,10 +215,11 @@ wsi-lab train-rl --config CONFIG.yaml --no-final-test-eval
 ```
 
 After successful pipeline completion it evaluates every official test slide
-once, preferring `best_validation.pt` and falling back to the latest compatible
-regular checkpoint if no validation winner exists. Results are written to
-`evaluation_ppo_test.json` in the PPO run directory and numeric aggregates are
-written as `test/*` TensorBoard tags. The JSON also records the resolved
-checkpoint path, global step, dependency fingerprints, selection mode, and
-embedded best-validation record. This final pass is reporting-only and does
-not update PPO, select a model, or mark test artifacts as training inputs.
+once per available checkpoint role: `best_validation.pt` and the newest
+compatible regular checkpoint. Results are written as a two-entry comparison
+in `evaluation_ppo_test.json` in the PPO run directory. Numeric aggregates use
+the `test/best_validation/*` and `test/latest/*` TensorBoard namespaces. Each
+entry records its resolved checkpoint path, global step, dependency
+fingerprints, selection role, and embedded best-validation record. These passes
+are reporting-only and do not update PPO, select between the two models, or
+mark test artifacts as training inputs.

@@ -111,6 +111,7 @@ wsi-lab train-belief --config configs/camelyon16.yaml
 wsi-lab eval-belief --config configs/camelyon16.yaml --split val
 wsi-lab train-rl --config configs/camelyon16.yaml
 wsi-lab eval-rl --config configs/camelyon16.yaml --split val
+wsi-lab eval-rl --config configs/camelyon16.yaml --split test --allow-test
 wsi-lab manual-play --config configs/camelyon16.yaml --split val
 wsi-lab render-trajectory --config configs/camelyon16.yaml --trajectory trajectory.json
 wsi-lab benchmark-env --config configs/camelyon16.yaml
@@ -123,10 +124,11 @@ The complete idempotent workflow is:
 wsi-lab run --config configs/camelyon16.yaml
 ```
 
-`train-rl` and `run` perform one guarded official-test evaluation after the
-pipeline completes. This final evaluation is enabled by default and uses the
-best validation checkpoint. Disable it when the official test set must remain
-unopened, or while doing exploratory runs:
+`train-rl` and `run` perform one guarded official-test reporting operation
+after the pipeline completes. This final report is enabled by default and
+evaluates both the best-validation checkpoint and the newest compatible regular
+checkpoint. Disable it when the official test set must remain unopened, or
+while doing exploratory runs:
 
 ```bash
 wsi-lab train-rl --config configs/camelyon16.yaml --no-final-test-eval
@@ -149,23 +151,31 @@ RL outputs live under
 
 - `tensorboard/` records PPO losses, `training/episode_return`,
   `training/episode_length`, cumulative `training/completed_episodes`, and
-  `training/learning_rate`, plus `validation/*` and final `test/*` metrics;
+  `training/learning_rate`, plus `validation/*`,
+  `test/best_validation/*`, and `test/latest/*` metrics;
 - `manifest.json` records the final global step, update and completed-episode
   counts, last PPO metrics, dependencies, and best-validation selection;
 - `validation_<global-step>.json` contains aggregate and per-slide validation
   results together with the checkpoint-selection decision;
 - `checkpoints/best_validation.pt` is the validation winner and
   `checkpoints/best_validation.json` is its selection record;
-- `evaluation_ppo_test.json` contains aggregate and per-slide final test
-  results, including accuracy, AUROC, sensitivity, specificity, episode
-  length/return, evidence, revisits, inspected fraction, magnification use, and
-  the resolved checkpoint provenance.
+- `evaluation_ppo_test.json` contains separate `best_validation` and `latest`
+  aggregate/per-slide results, including accuracy, AUROC, sensitivity,
+  specificity, episode length/return, evidence, revisits, inspected fraction,
+  magnification use, and each resolved checkpoint's provenance.
 
 Validation prefers the highest finite AUROC. Accuracy is used only until a
-finite AUROC is available, and an exact tie keeps the earlier checkpoint. If
-no validation checkpoint exists, final evaluation warns and falls back to the
-latest compatible regular checkpoint. Test results never select a checkpoint or
-feed back into training.
+finite AUROC is available, and an exact tie keeps the earlier checkpoint. Test
+evaluation always treats that winner and the newest compatible regular
+checkpoint as independent roles. If no validation winner exists, its report is
+marked unavailable while the latest checkpoint is still evaluated. Test results
+never select a checkpoint or feed back into training.
+
+Standalone `eval-rl --split test --allow-test` uses the same two-checkpoint
+report and can evaluate checkpoints from an interrupted training experiment;
+PPO manifest completion is not required. When `--config` points to a saved
+`<run>/config.yaml`, that run is recognized automatically. Use `--run-dir RUN`
+to select it explicitly when needed.
 
 View every run while it is training with:
 
