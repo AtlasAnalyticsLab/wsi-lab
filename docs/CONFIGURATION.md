@@ -218,8 +218,12 @@ After successful pipeline completion it evaluates every official test slide
 once per available checkpoint role: `best_validation.pt` and the newest
 compatible regular checkpoint. Results are written as a two-entry comparison
 in `evaluation_ppo_test.json` in the PPO run directory. Numeric aggregates use
-the `test/best_validation/*` and `test/latest/*` TensorBoard namespaces. Each
-entry records its resolved checkpoint path, global step, dependency
-fingerprints, selection role, and embedded best-validation record. These passes
-are reporting-only and do not update PPO, select between the two models, or
-mark test artifacts as training inputs.
+the `test/best_validation/*` and `test/latest/*` TensorBoard namespaces for the
+PPO diagnosis head. Each checkpoint entry also contains
+`ppo_patches_belief_metrics`, computed from its calibrated `final_belief >= 0.5`
+on the same PPO-selected trajectory; those numeric values use the nested
+`test/<selection>/ppo_patches_belief/*` namespace. Shared trajectory metrics
+remain in `metrics`. Each entry records its resolved checkpoint path, global
+step, dependency fingerprints, selection role, and embedded best-validation
+record. These passes are reporting-only and do not update PPO, select between
+the two models, or mark test artifacts as training inputs.

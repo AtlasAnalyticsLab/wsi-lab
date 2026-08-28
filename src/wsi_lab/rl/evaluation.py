@@ -11,6 +11,7 @@ import numpy as np
 import torch
 
 from wsi_lab.baselines.base import BaselinePolicy, action_mask
+from wsi_lab.belief.evaluation import compute_belief_metrics
 from wsi_lab.rl.networks import RecurrentActorCritic
 from wsi_lab.rl.rollout import observation_to, pack_observation
 
@@ -134,6 +135,67 @@ def _episode_record(
 
 def _safe_mean(values: list[float]) -> float | None:
     return float(np.mean(values)) if values else None
+
+
+def aggregate_ppo_patches_belief_metrics(
+    episodes: list[EpisodeEvaluation] | tuple[EpisodeEvaluation, ...],
+    *,
+    ece_bins: int = 15,
+) -> dict[str, Any]:
+    """Score the calibrated terminal belief on patches selected by PPO.
+
+    The trajectory and stopping decision are unchanged.  Only the terminal
+    diagnosis is replaced with ``final_belief >= 0.5``.  The counterfactual
+    return adjusts the executed return by the resulting change in terminal
+    diagnosis reward; all navigation rewards are preserved.
+    """
+
+    if not episodes:
+        raise ValueError("at least one episode is required")
+    labels = np.asarray([episode.true_label for episode in episodes], dtype=np.int64)
+    probabilities = np.asarray(
+        [episode.final_belief for episode in episodes], dtype=np.float64
+    )
+    predictions = probabilities >= 0.5
+    positive = labels == 1
+    negative = ~positive
+    true_positive = int(np.sum(predictions & positive))
+    true_negative = int(np.sum(~predictions & negative))
+    false_positive = int(np.sum(predictions & negative))
+    false_negative = int(np.sum(~predictions & positive))
+
+    belief = compute_belief_metrics(
+        labels,
+        probabilities,
+        ece_bins=ece_bins,
+        threshold=0.5,
+    ).to_dict()
+    # The standalone belief metrics use NaN for an undefined one-class
+    # quantity.  Evaluation reports use JSON null, matching PPO metrics and
+    # preventing non-finite TensorBoard values.
+    normalized_belief = {
+        name: (None if isinstance(value, float) and not np.isfinite(value) else value)
+        for name, value in belief.items()
+    }
+
+    ppo_predictions = np.asarray([episode.diagnosis for episode in episodes], dtype=np.int64)
+    ppo_correct = ppo_predictions == labels
+    belief_correct = predictions == positive
+    executed_returns = np.asarray([episode.return_ for episode in episodes], dtype=np.float64)
+    # Diagnosis reward is +1/-1 minus the same step cost for both readouts, so
+    # replacing the terminal diagnosis changes return by +2, 0, or -2.
+    counterfactual_returns = executed_returns + 2.0 * (
+        belief_correct.astype(np.float64) - ppo_correct.astype(np.float64)
+    )
+    return {
+        "decision_threshold": 0.5,
+        **normalized_belief,
+        "true_positive": true_positive,
+        "true_negative": true_negative,
+        "false_positive": false_positive,
+        "false_negative": false_negative,
+        "counterfactual_mean_return": float(np.mean(counterfactual_returns)),
+    }
 
 
 def aggregate_evaluation(episodes: list[EpisodeEvaluation]) -> dict[str, Any]:
@@ -303,6 +365,7 @@ __all__ = [
     "EpisodeEvaluation",
     "PolicyEvaluation",
     "aggregate_evaluation",
+    "aggregate_ppo_patches_belief_metrics",
     "evaluate_baseline",
     "evaluate_policy",
 ]

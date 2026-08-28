@@ -670,11 +670,19 @@ def test_automatic_final_test_evaluation_logs_numeric_test_metrics(
                         "has_both_classes": True,
                         "magnification_usage": {"20": 9},
                     },
+                    "ppo_patches_belief_metrics": {
+                        "accuracy": 0.8,
+                        "auroc": 0.84,
+                    },
                 },
                 "latest": {
                     "status": "complete",
                     "checkpoint_global_step": 5678,
                     "metrics": {"accuracy": 0.7, "auroc": 0.79},
+                    "ppo_patches_belief_metrics": {
+                        "accuracy": 0.72,
+                        "auroc": 0.8,
+                    },
                 },
             },
         },
@@ -687,8 +695,12 @@ def test_automatic_final_test_evaluation_logs_numeric_test_metrics(
     assert captured["events"] == [
         ("test/best_validation/accuracy", 0.75, 1234),
         ("test/best_validation/auroc", 0.81, 1234),
+        ("test/best_validation/ppo_patches_belief/accuracy", 0.8, 1234),
+        ("test/best_validation/ppo_patches_belief/auroc", 0.84, 1234),
         ("test/latest/accuracy", 0.7, 5678),
         ("test/latest/auroc", 0.79, 5678),
+        ("test/latest/ppo_patches_belief/accuracy", 0.72, 5678),
+        ("test/latest/ppo_patches_belief/auroc", 0.8, 5678),
     ]
     assert captured["closed"] is True
 
@@ -721,6 +733,9 @@ def test_ppo_test_evaluation_reports_best_and_latest_in_one_document(
         return {
             "episodes": [{"slide_id": f"{selection}-slide"}],
             "metrics": {"accuracy": 0.8 if selection == "best_validation" else 0.7},
+            "ppo_patches_belief_metrics": {
+                "accuracy": 0.9 if selection == "best_validation" else 0.85
+            },
             "checkpoint_selection": selection,
             "checkpoint_global_step": step,
             "checkpoint_path": str(path),
@@ -754,8 +769,13 @@ def test_ppo_test_evaluation_reports_best_and_latest_in_one_document(
     assert result["split"] == "test"
     assert result["evaluations"]["best_validation"]["status"] == "complete"
     assert result["evaluations"]["best_validation"]["metrics"]["accuracy"] == 0.8
+    assert (
+        result["evaluations"]["best_validation"]["ppo_patches_belief_metrics"]["accuracy"]
+        == 0.9
+    )
     assert result["evaluations"]["latest"]["status"] == "complete"
     assert result["evaluations"]["latest"]["metrics"]["accuracy"] == 0.7
+    assert result["evaluations"]["latest"]["ppo_patches_belief_metrics"]["accuracy"] == 0.85
 
     persisted = json.loads((run_dir / "evaluation_ppo_test.json").read_text(encoding="utf-8"))
     assert persisted == {
@@ -865,6 +885,7 @@ def test_ppo_evaluation_persists_resolved_checkpoint_provenance(
 
     config = _config(tmp_path)
     config.rl.device = "cpu"
+    config.belief.ece_bins = 7
     run_dir = tmp_path / "run"
     checkpoint = (run_dir / "checkpoints" / "best_validation.pt").resolve()
     loaded = SimpleNamespace(
@@ -885,11 +906,18 @@ def test_ppo_evaluation_persists_resolved_checkpoint_provenance(
             pass
 
     evaluation = SimpleNamespace(
+        episodes=("episode",),
         to_dict=lambda: {
             "episodes": [],
             "metrics": {"accuracy": 0.75, "auroc": 0.82},
         }
     )
+    aggregate_calls: list[tuple[object, int]] = []
+
+    def aggregate_belief(episodes, *, ece_bins):
+        aggregate_calls.append((episodes, ece_bins))
+        return {"accuracy": 0.625, "auroc": 0.73}
+
     monkeypatch.setattr(cli, "_make_production_environment", lambda *_args, **_kw: Environment())
     monkeypatch.setattr(
         cli,
@@ -903,6 +931,11 @@ def test_ppo_evaluation_persists_resolved_checkpoint_provenance(
     )
     monkeypatch.setattr(cli, "_load_ppo_model", lambda *_args, **_kw: (object(), loaded))
     monkeypatch.setattr(evaluation_module, "evaluate_policy", lambda *_args, **_kw: evaluation)
+    monkeypatch.setattr(
+        evaluation_module,
+        "aggregate_ppo_patches_belief_metrics",
+        aggregate_belief,
+    )
     monkeypatch.setattr(cli, "stage_fingerprints", lambda _: {Stage.PPO: "ppo"})
     monkeypatch.setattr(
         cli,
@@ -928,6 +961,8 @@ def test_ppo_evaluation_persists_resolved_checkpoint_provenance(
     }
     assert persisted["checkpoint_path"] == str(checkpoint)
     assert persisted["checkpoint_provenance"] == expected
+    assert persisted["ppo_patches_belief_metrics"] == {"accuracy": 0.625, "auroc": 0.73}
+    assert aggregate_calls == [(evaluation.episodes, 7)]
     assert result["checkpoint"] == str(checkpoint)
     assert result["checkpoint_provenance"] == expected
 

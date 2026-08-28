@@ -919,7 +919,10 @@ def _evaluate_ppo_checkpoint(
     checkpoint_selection: str,
     run_directory: Path,
 ) -> dict[str, Any]:
-    from wsi_lab.rl.evaluation import evaluate_policy
+    from wsi_lab.rl.evaluation import (
+        aggregate_ppo_patches_belief_metrics,
+        evaluate_policy,
+    )
     from wsi_lab.rl.trainer import resolve_device
 
     model, loaded = _load_ppo_model(
@@ -948,6 +951,10 @@ def _evaluate_ppo_checkpoint(
     embedded_best = loaded.extra.get("best_validation")
     best_validation = dict(embedded_best) if isinstance(embedded_best, Mapping) else None
     value = evaluation.to_dict()
+    value["ppo_patches_belief_metrics"] = aggregate_ppo_patches_belief_metrics(
+        evaluation.episodes,
+        ece_bins=config.belief.ece_bins,
+    )
     value["checkpoint_selection"] = checkpoint_selection
     value["checkpoint_global_step"] = loaded.global_step
     value["checkpoint_path"] = checkpoint
@@ -1153,6 +1160,15 @@ def _automatic_final_test_evaluation(config: AppConfig) -> dict[str, Any]:
                     for name, value in metrics.items():
                         if isinstance(value, (int, float)) and not isinstance(value, bool):
                             writer.add_scalar(f"test/{selection}/{name}", value, global_step)
+                    belief_metrics = evaluated.get("ppo_patches_belief_metrics")
+                    if isinstance(belief_metrics, Mapping):
+                        for name, value in belief_metrics.items():
+                            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                                writer.add_scalar(
+                                    f"test/{selection}/ppo_patches_belief/{name}",
+                                    value,
+                                    global_step,
+                                )
         finally:
             writer.close()
     return result

@@ -160,9 +160,12 @@ RL outputs live under
 - `checkpoints/best_validation.pt` is the validation winner and
   `checkpoints/best_validation.json` is its selection record;
 - `evaluation_ppo_test.json` contains separate `best_validation` and `latest`
-  aggregate/per-slide results, including accuracy, AUROC, sensitivity,
-  specificity, episode length/return, evidence, revisits, inspected fraction,
-  magnification use, and each resolved checkpoint's provenance.
+  aggregate/per-slide results. Each completed checkpoint keeps PPO diagnosis-head
+  and shared trajectory results in `metrics`, and adds
+  `ppo_patches_belief_metrics`, which scores the calibrated final belief at a
+  `0.5` threshold on the patches selected by PPO. The latter also reports NLL,
+  Brier score, ECE, confusion counts, and a counterfactual terminal-diagnosis
+  return. Each entry records its resolved checkpoint provenance.
 
 Validation prefers the highest finite AUROC. Accuracy is used only until a
 finite AUROC is available, and an exact tie keeps the earlier checkpoint. Test
