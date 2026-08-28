@@ -9,9 +9,10 @@ import logging
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
-from datetime import UTC, datetime
+from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypeAlias
 
 import yaml
 
@@ -30,6 +31,42 @@ from wsi_lab.utils.atomic import atomic_json_dump, atomic_write_text
 from wsi_lab.utils.logging import configure_logging
 
 LOGGER = logging.getLogger(__name__)
+_TestArtifactMode: TypeAlias = Literal["auto", "prepare", "require"]
+
+
+@dataclass
+class _EvaluationContext:
+    """Lazily resolved, command-local evaluation dependencies.
+
+    Evaluation used to rescan the complete dataset every time a helper needed
+    fingerprints or the persisted split.  Sharing this context across test
+    preparation, checkpoint loading, and environment construction keeps those
+    checks strict while performing them at most once per evaluator command.
+    Training callers do not pass this context and retain their existing path.
+    """
+
+    config: AppConfig
+    test_artifact_entries: dict[str, dict[str, Any]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+
+    @cached_property
+    def fingerprints(self) -> dict[Stage, str]:
+        return stage_fingerprints(self.config)
+
+    @cached_property
+    def paths(self) -> dict[Stage, Path]:
+        return artifact_paths(self.config, self.fingerprints)
+
+    @cached_property
+    def split(self) -> DatasetSplit:
+        return _load_verified_split(self.config)
+
+    @cached_property
+    def embedding_dimension(self) -> int:
+        return _active_embedding_dimension(self.config, split=self.split)
 
 
 def _adapter(config: AppConfig) -> DatasetAdapter:
@@ -161,9 +198,18 @@ def _load_verified_split(config: AppConfig) -> DatasetSplit:
     return split
 
 
-def _belief_expected_dependencies(config: AppConfig, embedding_dimension: int) -> dict[str, str]:
-    fingerprints = stage_fingerprints(config)
-    split = _load_verified_split(config)
+def _belief_expected_dependencies(
+    config: AppConfig,
+    embedding_dimension: int,
+    *,
+    context: _EvaluationContext | None = None,
+) -> dict[str, str]:
+    if context is None:
+        fingerprints = stage_fingerprints(config)
+        split = _load_verified_split(config)
+    else:
+        fingerprints = context.fingerprints
+        split = context.split
     return {
         "belief_stage": fingerprints[Stage.BELIEF],
         "split": split.split_fingerprint,
@@ -172,11 +218,11 @@ def _belief_expected_dependencies(config: AppConfig, embedding_dimension: int) -
     }
 
 
-def _active_embedding_dimension(config: AppConfig) -> int:
+def _active_embedding_dimension(config: AppConfig, *, split: DatasetSplit | None = None) -> int:
     from wsi_lab.data.embeddings.hdf5 import AtlasPatchHDF5Reader
 
-    split = _load_verified_split(config)
-    train_ids = split.ids("train")
+    active_split = split or _load_verified_split(config)
+    train_ids = active_split.ids("train")
     if not train_ids:
         raise ValueError("persisted training split is empty")
     adapter = _adapter(config)
@@ -190,25 +236,42 @@ def _active_embedding_dimension(config: AppConfig) -> int:
     return dimensions.pop()
 
 
-def _load_active_belief(config: AppConfig, *, device: str):
+def _load_active_belief(
+    config: AppConfig,
+    *,
+    device: str,
+    context: _EvaluationContext | None = None,
+):
     from wsi_lab.belief.trainer import load_calibrated_belief
 
-    embedding_dimension = _active_embedding_dimension(config)
-    fingerprints = stage_fingerprints(config)
-    paths = artifact_paths(config, fingerprints)
+    if context is None:
+        embedding_dimension = _active_embedding_dimension(config)
+        fingerprints = stage_fingerprints(config)
+        paths = artifact_paths(config, fingerprints)
+    else:
+        embedding_dimension = context.embedding_dimension
+        paths = context.paths
     checkpoint = paths[Stage.BELIEF].parent / "calibrated_checkpoint.pt"
     return load_calibrated_belief(
         checkpoint,
-        expected_dependencies=_belief_expected_dependencies(config, embedding_dimension),
+        expected_dependencies=_belief_expected_dependencies(
+            config,
+            embedding_dimension,
+            context=context,
+        ),
         device=device,
     )
 
 
-def _preprocessing_store(config: AppConfig):
+def _preprocessing_store(config: AppConfig, *, context: _EvaluationContext | None = None):
     from wsi_lab.preprocessing.artifacts import ArtifactStore
 
-    fingerprints = stage_fingerprints(config)
-    return ArtifactStore(artifact_paths(config, fingerprints)[Stage.PREPROCESSING].parent)
+    if context is None:
+        fingerprints = stage_fingerprints(config)
+        paths = artifact_paths(config, fingerprints)
+    else:
+        paths = context.paths
+    return ArtifactStore(paths[Stage.PREPROCESSING].parent)
 
 
 def _make_production_environment(
@@ -218,20 +281,48 @@ def _make_production_environment(
     evaluation: bool,
     allow_test: bool = False,
     render_mode: str | None = None,
+    max_episode_steps_override: int | None = None,
+    min_diagnostic_evidence_override: int | None = None,
+    lightweight_evaluation_override: bool | None = None,
+    context: _EvaluationContext | None = None,
 ):
     from wsi_lab.belief.accumulator import BeliefAccumulator
     from wsi_lab.envs.wsi_env import WSIEnv
     from wsi_lab.preprocessing.pipeline import ProcessedEpisodeSource
 
     _ensure_test_access(split_name, allow_test)
-    split = _load_verified_split(config)
-    source = ProcessedEpisodeSource.from_config(
-        config,
-        _preprocessing_store(config),
-        split,
-        allow_test=allow_test,
+    split = context.split if context is not None else _load_verified_split(config)
+    store = (
+        _preprocessing_store(config, context=context)
+        if context is not None
+        else _preprocessing_store(config)
     )
-    model, temperature, _ = _load_active_belief(config, device=config.rl.belief_device)
+    if context is not None and split_name == "test":
+        source = ProcessedEpisodeSource.from_config(
+            config,
+            store,
+            split,
+            allow_test=allow_test,
+            artifact_expectations=context.test_artifact_entries,
+        )
+    else:
+        source = ProcessedEpisodeSource.from_config(
+            config,
+            store,
+            split,
+            allow_test=allow_test,
+        )
+    if context is None:
+        model, temperature, _ = _load_active_belief(
+            config,
+            device=config.rl.belief_device,
+        )
+    else:
+        model, temperature, _ = _load_active_belief(
+            config,
+            device=config.rl.belief_device,
+            context=context,
+        )
     belief = BeliefAccumulator(model, temperature=temperature)
     return WSIEnv(
         source,
@@ -247,13 +338,24 @@ def _make_production_environment(
         photometric_augmentation=(
             config.environment.photometric_augmentation if not evaluation else False
         ),
-        max_episode_steps=config.environment.max_episode_steps,
-        min_diagnostic_evidence=config.environment.min_diagnostic_evidence,
+        max_episode_steps=(
+            config.environment.max_episode_steps
+            if max_episode_steps_override is None
+            else max_episode_steps_override
+        ),
+        min_diagnostic_evidence=(
+            config.environment.min_diagnostic_evidence
+            if min_diagnostic_evidence_override is None
+            else min_diagnostic_evidence_override
+        ),
         max_visit_count=config.environment.max_visit_count,
         reward_type=config.environment.reward_type,
         step_cost=config.environment.step_cost,
         belief_reward_beta=config.environment.belief_reward_beta,
         render_mode=render_mode,
+        lightweight_evaluation=(
+            False if lightweight_evaluation_override is None else lightweight_evaluation_override
+        ),
     )
 
 
@@ -513,13 +615,16 @@ def _belief_stage(
     }
 
 
-def _ppo_dependencies(config: AppConfig) -> dict[str, str]:
-    fingerprints = stage_fingerprints(config)
+def _ppo_dependencies(
+    config: AppConfig, *, context: _EvaluationContext | None = None
+) -> dict[str, str]:
+    fingerprints = context.fingerprints if context is not None else stage_fingerprints(config)
+    split = context.split if context is not None else _load_verified_split(config)
     return {
         "dataset_fingerprint": fingerprints[Stage.DATASET],
         "preprocessing_fingerprint": fingerprints[Stage.PREPROCESSING],
         "belief_fingerprint": fingerprints[Stage.BELIEF],
-        "split_fingerprint": _load_verified_split(config).split_fingerprint,
+        "split_fingerprint": split.split_fingerprint,
     }
 
 
@@ -658,7 +763,12 @@ def _ensure_test_access(split: str, allow_test: bool) -> None:
         raise TestSplitAccessError("Test split access requires --split test --allow-test")
 
 
-def _prepare_authorized_test_preprocessing(config: AppConfig) -> dict[str, Any]:
+def _prepare_authorized_test_preprocessing(
+    config: AppConfig,
+    *,
+    mode: _TestArtifactMode = "auto",
+    context: _EvaluationContext | None = None,
+) -> dict[str, Any]:
     """Build guarded-test navigation artifacts for an authorized evaluation.
 
     The normal preprocessing stage owns only development artifacts.  This
@@ -667,14 +777,15 @@ def _prepare_authorized_test_preprocessing(config: AppConfig) -> dict[str, Any]:
     Its output is never a dependency of belief or PPO training.
     """
 
-    from wsi_lab.data.embeddings.hdf5 import HDF5EmbeddingProvider
     from wsi_lab.preprocessing.artifacts import ArtifactStore
-    from wsi_lab.preprocessing.pipeline import PreprocessingOptions, Preprocessor
-    from wsi_lab.utils.fingerprints import fingerprint
-    from wsi_lab.wsi.reader import OpenSlideReader
+    from wsi_lab.preprocessing.test_artifacts import (
+        ensure_test_artifacts,
+        load_test_artifact_entries,
+    )
 
-    fingerprints = stage_fingerprints(config)
-    paths = artifact_paths(config, fingerprints)
+    resolved = context or _EvaluationContext(config)
+    fingerprints = resolved.fingerprints
+    paths = resolved.paths
     development_manifest_path = paths[Stage.PREPROCESSING]
     try:
         development_manifest = json.loads(development_manifest_path.read_text(encoding="utf-8"))
@@ -698,7 +809,7 @@ def _prepare_authorized_test_preprocessing(config: AppConfig) -> dict[str, Any]:
 
     adapter = _adapter(config)
     records = tuple(adapter.iter_slides())
-    split = _load_verified_split(config)
+    split = resolved.split
     development_ids = (*split.ids("train"), *split.ids("val"))
     test_ids_in_adapter_order = tuple(record.slide_id for record in records)
     authorized_ids = set(split.ids("test"))
@@ -717,76 +828,50 @@ def _prepare_authorized_test_preprocessing(config: AppConfig) -> dict[str, Any]:
             "development preprocessing offset table is incomplete; missing slides: "
             f"{sorted(missing_development)[:8]}"
         )
-    evaluation_fingerprint = fingerprint(
-        {
-            "scope": "authorized-official-test-evaluation",
-            "preprocessing": fingerprints[Stage.PREPROCESSING],
-            "split": split.split_fingerprint,
-            "test_slides": test_ids,
-        }
-    )
-    manifest_path = store.root / "test_evaluation_preprocessing.json"
-    started_at = datetime.now(UTC)
-    atomic_json_dump(
-        manifest_path,
-        {
-            "status": "incomplete",
-            "fingerprint": evaluation_fingerprint,
-            "scope": "authorized-official-test-evaluation",
-            "started_at": started_at.isoformat(),
-            "slides": list(test_ids),
-        },
-    )
 
-    reader = OpenSlideReader(
-        handle_cache_size=config.environment.slide_handle_cache_size,
-        viewport_cache_size=config.environment.viewport_cache_size,
-        persistent_cache_dir=config.environment.persistent_rgb_cache,
-    )
-    processor = Preprocessor(
-        adapter,
-        HDF5EmbeddingProvider(adapter),
-        reader,
-        store,
-        options=PreprocessingOptions.from_config(
-            config,
-            tissue_cache_root=paths[Stage.TISSUE].parent,
-        ),
-    )
-    try:
-        results = processor.preprocess(test_ids, merge_index=True)
-    except BaseException as exc:
-        atomic_json_dump(
-            manifest_path,
-            {
-                "status": "failed",
-                "fingerprint": evaluation_fingerprint,
-                "scope": "authorized-official-test-evaluation",
-                "started_at": started_at.isoformat(),
-                "failed_at": datetime.now(UTC).isoformat(),
-                "slides": list(test_ids),
-                "error": repr(exc),
-            },
+    def build(missing_slide_ids: tuple[str, ...]):
+        from wsi_lab.data.embeddings.hdf5 import HDF5EmbeddingProvider
+        from wsi_lab.preprocessing.pipeline import PreprocessingOptions, Preprocessor
+        from wsi_lab.wsi.reader import OpenSlideReader
+
+        reader = OpenSlideReader(
+            handle_cache_size=config.environment.slide_handle_cache_size,
+            viewport_cache_size=config.environment.viewport_cache_size,
+            persistent_cache_dir=config.environment.persistent_rgb_cache,
         )
-        raise
-    finally:
-        reader.close()
-    completed_at = datetime.now(UTC)
-    value: dict[str, Any] = {
-        "status": "complete",
-        "fingerprint": evaluation_fingerprint,
-        "scope": "authorized-official-test-evaluation",
-        "started_at": started_at.isoformat(),
-        "completed_at": completed_at.isoformat(),
-        "slides": len(results),
-        "built": sum(not result.reused for result in results),
-        "reused": sum(result.reused for result in results),
-        "development_slide_artifacts_modified": False,
-        "shared_index_extended": True,
-        "training_dependency": False,
-    }
-    atomic_json_dump(manifest_path, value)
-    return {"manifest": str(manifest_path), **value}
+        processor = Preprocessor(
+            adapter,
+            HDF5EmbeddingProvider(adapter),
+            reader,
+            store,
+            options=PreprocessingOptions.from_config(
+                config,
+                tissue_cache_root=paths[Stage.TISSUE].parent,
+                concurrent_writes=True,
+            ),
+        )
+        try:
+            return processor.preprocess(
+                missing_slide_ids,
+                write_index=False,
+            )
+        finally:
+            reader.close()
+
+    result = ensure_test_artifacts(
+        store=store,
+        preprocessing_fingerprint=fingerprints[Stage.PREPROCESSING],
+        split_fingerprint=split.split_fingerprint,
+        test_slide_ids=test_ids,
+        mode=mode,
+        builder=build if mode != "require" else None,
+    )
+    if context is not None:
+        context.test_artifact_entries = load_test_artifact_entries(
+            result["index"],
+            expected_fingerprint=str(result["index_fingerprint"]),
+        )
+    return result
 
 
 def _evaluate_belief_command(
@@ -840,11 +925,18 @@ def _evaluate_belief_command(
     return {"output": str(output), **value}
 
 
-def _resolved_ppo_run_directory(config: AppConfig, run_directory: str | Path | None = None) -> Path:
+def _resolved_ppo_run_directory(
+    config: AppConfig,
+    run_directory: str | Path | None = None,
+    *,
+    context: _EvaluationContext | None = None,
+) -> Path:
     if run_directory is not None:
         return Path(run_directory).expanduser().resolve()
-    fingerprints = stage_fingerprints(config)
-    return artifact_paths(config, fingerprints)[Stage.PPO].parent
+    paths = (
+        context.paths if context is not None else artifact_paths(config, stage_fingerprints(config))
+    )
+    return paths[Stage.PPO].parent
 
 
 def _saved_ppo_run_directory(config_path: str | Path) -> Path | None:
@@ -873,13 +965,21 @@ def _load_ppo_model(
     checkpoint_path: str | Path | None = None,
     *,
     run_directory: str | Path | None = None,
+    context: _EvaluationContext | None = None,
 ):
     from wsi_lab.rl.checkpoints import checkpoint_candidates, load_ppo_checkpoint
     from wsi_lab.rl.networks import RecurrentActorCritic
     from wsi_lab.rl.recurrent_ppo import PPOConfig
     from wsi_lab.rl.trainer import RESUME_CONFIG_FIELDS, resolve_device
 
-    directory = _resolved_ppo_run_directory(config, run_directory) / "checkpoints"
+    directory = (
+        _resolved_ppo_run_directory(
+            config,
+            run_directory,
+            context=context,
+        )
+        / "checkpoints"
+    )
     candidates = (
         [Path(checkpoint_path).expanduser().resolve()]
         if checkpoint_path is not None
@@ -889,6 +989,11 @@ def _load_ppo_model(
         raise FileNotFoundError(f"no PPO checkpoint exists under {directory}")
     expected_config = PPOConfig.from_object(config.rl).to_dict()
     device = resolve_device(config.rl.device)
+    dependencies = (
+        _ppo_dependencies(config, context=context)
+        if context is not None
+        else _ppo_dependencies(config)
+    )
     failures: list[str] = []
     for candidate in candidates:
         model = RecurrentActorCritic()
@@ -900,7 +1005,7 @@ def _load_ppo_model(
                 restore_rng=False,
                 expected_config=expected_config,
                 compatibility_fields=RESUME_CONFIG_FIELDS,
-                expected_dependencies=_ppo_dependencies(config),
+                expected_dependencies=dependencies,
             )
         except (KeyError, RuntimeError, ValueError) as exc:
             failures.append(f"{candidate.name}: {exc}")
@@ -918,6 +1023,7 @@ def _evaluate_ppo_checkpoint(
     checkpoint_path: str | Path | None,
     checkpoint_selection: str,
     run_directory: Path,
+    context: _EvaluationContext | None = None,
 ) -> dict[str, Any]:
     from wsi_lab.rl.evaluation import (
         aggregate_ppo_patches_belief_metrics,
@@ -929,12 +1035,14 @@ def _evaluate_ppo_checkpoint(
         config,
         checkpoint_path=checkpoint_path,
         run_directory=run_directory,
+        context=context,
     )
     environment = _make_production_environment(
         config,
         split_name=split_name,
         evaluation=True,
         allow_test=allow_test,
+        context=context,
     )
     try:
         evaluation = evaluate_policy(
@@ -997,16 +1105,28 @@ def _evaluate_rl_command(
     checkpoint_path: str | Path | None = None,
     checkpoint_selection: str = "auto",
     run_directory: str | Path | None = None,
+    test_artifact_mode: _TestArtifactMode = "auto",
 ) -> dict[str, Any]:
     _ensure_test_access(split_name, allow_test)
     from wsi_lab.rl.evaluation import evaluate_baseline
 
+    context = _EvaluationContext(config)
     test_preprocessing = (
-        _prepare_authorized_test_preprocessing(config) if split_name == "test" else None
+        _prepare_authorized_test_preprocessing(
+            config,
+            mode=test_artifact_mode,
+            context=context,
+        )
+        if split_name == "test"
+        else None
     )
-    split = _load_verified_split(config)
+    split = context.split
     episodes = len(split.ids(split_name))
-    resolved_run_directory = _resolved_ppo_run_directory(config, run_directory)
+    resolved_run_directory = _resolved_ppo_run_directory(
+        config,
+        run_directory,
+        context=context,
+    )
     checkpoint: str | None = None
     comparison = (
         policy_name == "ppo"
@@ -1028,6 +1148,7 @@ def _evaluate_rl_command(
                     checkpoint_path=selected_path,
                     checkpoint_selection=selection,
                     run_directory=resolved_run_directory,
+                    context=context,
                 )
             except (OSError, RuntimeError, ValueError) as exc:
                 LOGGER.warning("Could not evaluate %s PPO checkpoint: %s", selection, exc)
@@ -1078,6 +1199,7 @@ def _evaluate_rl_command(
             checkpoint_path=checkpoint_path,
             checkpoint_selection=selection,
             run_directory=resolved_run_directory,
+            context=context,
         )
         checkpoint = str(value["checkpoint_path"])
     else:
@@ -1110,6 +1232,7 @@ def _evaluate_rl_command(
             split_name=split_name,
             evaluation=True,
             allow_test=allow_test,
+            context=context,
         )
         try:
             evaluation = evaluate_baseline(
@@ -1122,14 +1245,168 @@ def _evaluate_rl_command(
             environment.close()
         value = evaluation.to_dict()
 
+    if test_preprocessing is not None:
+        value["test_preprocessing"] = test_preprocessing
     output = resolved_run_directory / f"evaluation_{policy_name}_{split_name}.json"
     atomic_json_dump(output, value)
     result = {"output": str(output), "policy": policy_name, **value}
     if not comparison:
         result["checkpoint"] = checkpoint
-    if test_preprocessing is not None:
-        result["test_preprocessing"] = test_preprocessing
     return result
+
+
+def _evaluate_baselines_command(
+    config: AppConfig,
+    split_name: SplitName,
+    allow_test: bool,
+    *,
+    navigator_names: tuple[str, ...] = ("random", "raster"),
+    confidence_thresholds: tuple[float, ...] = (0.5, 0.9),
+    confidence_min_evidence: int = 32,
+    step_budgets: tuple[int, ...] = (1, 4, 8, 16, 32, 64, 128, 256, 500),
+    confidence_max_total_actions: int = 500,
+    random_seed: int | None = None,
+    output_path: str | Path | None = None,
+    test_artifact_mode: _TestArtifactMode = "auto",
+) -> dict[str, Any]:
+    """Evaluate reusable navigation baselines without loading a PPO checkpoint."""
+
+    _ensure_test_access(split_name, allow_test)
+    from wsi_lab.baselines.sweep import SweepProtocol, evaluate_navigation_sweep
+
+    context = _EvaluationContext(config)
+    seed = config.rl.seed if random_seed is None else random_seed
+    protocol = SweepProtocol(
+        confidence_thresholds=confidence_thresholds,
+        step_budgets=step_budgets,
+        confidence_min_evidence=confidence_min_evidence,
+        confidence_max_total_actions=confidence_max_total_actions,
+        random_seed=seed,
+        ece_bins=config.belief.ece_bins,
+    )
+    effective_max_episode_steps = max(
+        protocol.confidence_max_total_actions,
+        max(protocol.step_budgets) + 1,
+    )
+    test_preprocessing = (
+        _prepare_authorized_test_preprocessing(
+            config,
+            mode=test_artifact_mode,
+            context=context,
+        )
+        if split_name == "test"
+        else None
+    )
+    split = context.split
+    episodes = len(split.ids(split_name))
+    environment_factory = functools.partial(
+        _make_production_environment,
+        config,
+        split_name=split_name,
+        evaluation=True,
+        allow_test=allow_test,
+        # The sweep derives confidence and fixed-step prefix outcomes from
+        # diagnosis-free navigation trajectories.  These evaluation-only
+        # overrides do not alter any artifact fingerprint or saved config.
+        max_episode_steps_override=effective_max_episode_steps,
+        min_diagnostic_evidence_override=0,
+        lightweight_evaluation_override=True,
+        context=context,
+    )
+    sweep = evaluate_navigation_sweep(
+        environment_factory,
+        navigator_names,
+        episodes,
+        protocol,
+    )
+
+    fingerprints = context.fingerprints
+    paths = context.paths
+    belief_manifest_path = paths[Stage.BELIEF]
+    belief_directory = belief_manifest_path.parent
+    checkpoint_path = belief_directory / "calibrated_checkpoint.pt"
+
+    def read_json_mapping(path: Path) -> Mapping[str, Any] | None:
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return loaded if isinstance(loaded, Mapping) else None
+
+    belief_manifest = read_json_mapping(belief_manifest_path)
+    manifest_metadata = belief_manifest.get("metadata") if belief_manifest is not None else None
+    if not isinstance(manifest_metadata, Mapping):
+        manifest_metadata = {}
+    checkpoint_dependencies = manifest_metadata.get("dependencies")
+    if not isinstance(checkpoint_dependencies, Mapping) and belief_manifest is not None:
+        checkpoint_dependencies = belief_manifest.get("dependencies")
+    checkpoint_architecture = manifest_metadata.get("architecture")
+    temperature_payload = read_json_mapping(belief_directory / "temperature.json")
+    temperature_value = (
+        temperature_payload.get("temperature") if temperature_payload is not None else None
+    )
+    if temperature_value is None:
+        temperature_value = manifest_metadata.get("temperature")
+    from wsi_lab.preprocessing.atlaspatch import sha256_file
+
+    split_ids = split.ids(split_name)
+    labels = [int(split.assignment(slide_id).label) for slide_id in split_ids]
+    provenance: dict[str, Any] = {
+        "dataset_fingerprint": fingerprints[Stage.DATASET],
+        "preprocessing_fingerprint": fingerprints[Stage.PREPROCESSING],
+        "belief_fingerprint": fingerprints[Stage.BELIEF],
+        "split_fingerprint": split.split_fingerprint,
+        "belief_checkpoint": {
+            "path": str(checkpoint_path),
+            "sha256": sha256_file(checkpoint_path),
+            "temperature": (float(temperature_value) if temperature_value is not None else None),
+            "dependencies": (
+                dict(checkpoint_dependencies)
+                if isinstance(checkpoint_dependencies, Mapping)
+                else None
+            ),
+            "architecture": (
+                dict(checkpoint_architecture)
+                if isinstance(checkpoint_architecture, Mapping)
+                else None
+            ),
+            "manifest": str(belief_manifest_path),
+            "temperature_file": str(belief_directory / "temperature.json"),
+        },
+        "split_counts": {
+            "total": len(labels),
+            "positive": sum(label == 1 for label in labels),
+            "negative": sum(label == 0 for label in labels),
+            "unique_slide_count": len(set(split_ids)),
+        },
+        "environment": {
+            "configured": {
+                "max_episode_steps": config.environment.max_episode_steps,
+                "min_diagnostic_evidence": config.environment.min_diagnostic_evidence,
+                "lightweight_evaluation": False,
+            },
+            "effective": {
+                "max_episode_steps": effective_max_episode_steps,
+                "min_diagnostic_evidence": 0,
+                "lightweight_evaluation": True,
+            },
+        },
+    }
+    if test_preprocessing is not None:
+        provenance["test_preprocessing"] = test_preprocessing
+        provenance["authorized_test_preprocessing_fingerprint"] = test_preprocessing.get(
+            "fingerprint"
+        )
+    value = {
+        **sweep,
+        "evaluation_type": "navigation_baseline_sweep",
+        "split": split_name,
+        "provenance": provenance,
+    }
+    default_output = belief_directory / f"evaluation_{split_name}_navigation_baseline_sweep.json"
+    output = default_output if output_path is None else Path(output_path).expanduser().resolve()
+    atomic_json_dump(output, value)
+    return {"output": str(output), **value}
 
 
 def _automatic_final_test_evaluation(config: AppConfig) -> dict[str, Any]:
@@ -1309,6 +1586,16 @@ def build_parser() -> argparse.ArgumentParser:
                     "run one guarded official-test evaluation after PPO training (default: enabled)"
                 ),
             )
+    prepare_test = commands.add_parser(
+        "prepare-test",
+        help="prepare immutable official-test navigation artifacts once",
+    )
+    prepare_test.add_argument("--config", required=True, type=Path)
+    prepare_test.add_argument(
+        "--allow-test",
+        action="store_true",
+        help="explicitly authorize access to the official test cohort",
+    )
     for name in ("eval-belief", "eval-rl"):
         command = commands.add_parser(name)
         command.add_argument("--config", required=True, type=Path)
@@ -1330,6 +1617,77 @@ def build_parser() -> argparse.ArgumentParser:
             )
             command.add_argument("--fixed-budget", type=int, default=128)
             command.add_argument("--confidence-threshold", type=float, default=0.9)
+            command.add_argument(
+                "--test-artifacts",
+                choices=("auto", "require"),
+                default="auto",
+                help=(
+                    "official-test artifact handling: auto prepares a missing cache; "
+                    "require is read-only and fails unless it is ready (default: auto)"
+                ),
+            )
+    baselines = commands.add_parser(
+        "eval-baselines",
+        help="evaluate random and raster navigation with shared belief-based stopping rules",
+    )
+    baselines.add_argument("--config", required=True, type=Path)
+    baselines.add_argument("--split", choices=("val", "test"), default="val")
+    baselines.add_argument("--allow-test", action="store_true")
+    baselines.add_argument(
+        "--test-artifacts",
+        choices=("auto", "require"),
+        default="auto",
+        help=(
+            "official-test artifact handling: auto prepares a missing cache; "
+            "require is read-only and fails unless it is ready (default: auto)"
+        ),
+    )
+    baselines.add_argument(
+        "--navigators",
+        choices=("random", "raster"),
+        nargs="+",
+        default=("random", "raster"),
+        help="navigation strategies to compare (default: random raster)",
+    )
+    baselines.add_argument(
+        "--thresholds",
+        type=float,
+        nargs="+",
+        default=(0.5, 0.9),
+        help="symmetric belief-confidence thresholds (default: 0.5 0.9)",
+    )
+    baselines.add_argument(
+        "--confidence-min-evidence",
+        type=int,
+        default=32,
+        help="minimum unique evidence count before confidence stopping (default: 32)",
+    )
+    baselines.add_argument(
+        "--step-budgets",
+        type=int,
+        nargs="+",
+        default=(1, 4, 8, 16, 32, 64, 128, 256, 500),
+        help="fixed navigation-step budgets (default: 1 4 8 16 32 64 128 256 500)",
+    )
+    baselines.add_argument(
+        "--confidence-max-total-actions",
+        type=int,
+        default=500,
+        help="confidence-run cap including the diagnosis action (default: 500)",
+    )
+    baselines.add_argument(
+        "--random-seed",
+        type=int,
+        help="random navigator seed (default: rl.seed from the config)",
+    )
+    baselines.add_argument(
+        "--output",
+        type=Path,
+        help=(
+            "report path (default: the belief artifact directory under "
+            "evaluation_<split>_navigation_baseline_sweep.json)"
+        ),
+    )
     render = commands.add_parser("render-trajectory")
     render.add_argument("--config", required=True, type=Path)
     render.add_argument("--trajectory", required=True, type=Path)
@@ -1356,6 +1714,15 @@ def _dispatch(arguments: argparse.Namespace) -> int:
         print(json.dumps(_smoke_test(), indent=2))
         return 0
     config = load_config(arguments.config)
+    if arguments.command == "prepare-test":
+        _ensure_test_access("test", arguments.allow_test)
+        print(
+            json.dumps(
+                _prepare_authorized_test_preprocessing(config, mode="prepare"),
+                indent=2,
+            )
+        )
+        return 0
     if arguments.command == "eval-belief":
         print(
             json.dumps(
@@ -1375,6 +1742,27 @@ def _dispatch(arguments: argparse.Namespace) -> int:
                     fixed_budget=arguments.fixed_budget,
                     confidence_threshold=arguments.confidence_threshold,
                     run_directory=run_directory,
+                    test_artifact_mode=arguments.test_artifacts,
+                ),
+                indent=2,
+            )
+        )
+        return 0
+    if arguments.command == "eval-baselines":
+        print(
+            json.dumps(
+                _evaluate_baselines_command(
+                    config,
+                    arguments.split,
+                    arguments.allow_test,
+                    navigator_names=tuple(arguments.navigators),
+                    confidence_thresholds=tuple(arguments.thresholds),
+                    confidence_min_evidence=arguments.confidence_min_evidence,
+                    step_budgets=tuple(arguments.step_budgets),
+                    confidence_max_total_actions=arguments.confidence_max_total_actions,
+                    random_seed=arguments.random_seed,
+                    output_path=arguments.output,
+                    test_artifact_mode=arguments.test_artifacts,
                 ),
                 indent=2,
             )

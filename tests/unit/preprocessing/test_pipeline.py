@@ -12,13 +12,14 @@ from wsi_lab.constants import CELL_ID_SLIDE_BLOCK_SIZE
 from wsi_lab.data.base import DatasetAdapter, EmbeddingLocation, SlideRecord
 from wsi_lab.data.embeddings.hdf5 import HDF5EmbeddingProvider
 from wsi_lab.data.splits import DatasetSplit, SplitAssignment
-from wsi_lab.errors import PreprocessingError
+from wsi_lab.errors import ArtifactCompatibilityError, PreprocessingError
 from wsi_lab.preprocessing.artifacts import ArtifactStore
 from wsi_lab.preprocessing.pipeline import (
     PreprocessingOptions,
     Preprocessor,
     ProcessedEpisodeSource,
 )
+from wsi_lab.utils.fingerprints import fingerprint
 from wsi_lab.wsi.reader import PillowSlideReader
 
 
@@ -109,6 +110,7 @@ def _fixture(tmp_path: Path) -> tuple[MiniAdapter, HDF5EmbeddingProvider]:
 
 def test_preprocessing_defaults_to_atlaspatch_tissue_detection() -> None:
     assert PreprocessingOptions().tissue_source == "atlaspatch"
+    assert PreprocessingOptions().concurrent_writes is False
 
 
 def test_preprocessor_persists_global_offsets_sparse_rows_and_mpp_override(tmp_path: Path) -> None:
@@ -129,6 +131,9 @@ def test_preprocessor_persists_global_offsets_sparse_rows_and_mpp_override(tmp_p
     results = processor.preprocess()
 
     assert len(results) == 2
+    assert store.index_path.is_file()
+    assert not store.offsets_lock_path.exists()
+    assert not store.index_lock_path.exists()
     assert results[0].cell_id_offset == 0
     assert results[1].cell_id_offset == CELL_ID_SLIDE_BLOCK_SIZE
     first_ids = set(store.load_geometry("normal_001").level(20).cells["cell_id"].tolist())
@@ -234,6 +239,128 @@ def test_sparse_offset_allocation_skips_interleaved_unrequested_test_cohort(
     assert not adapter.embedding_location("test_001", 2.5).path.exists()
 
 
+def test_offset_extension_reloads_disk_before_publishing(tmp_path: Path) -> None:
+    slide_ids = ("normal_001", "test_001", "tumor_001")
+    adapter = MiniAdapter(tmp_path, slide_ids)
+    for slide_id in slide_ids:
+        _write_embedding(
+            adapter.embedding_location(slide_id, 2.5).path,
+            slide_id,
+            2.5,
+        )
+    store = ArtifactStore(tmp_path / "artifacts")
+    options = PreprocessingOptions(concurrent_writes=True)
+    first = Preprocessor(
+        adapter,
+        HDF5EmbeddingProvider(adapter),
+        PillowSlideReader(),
+        store,
+        options=options,
+    )
+    second = Preprocessor(
+        adapter,
+        HDF5EmbeddingProvider(adapter),
+        PillowSlideReader(),
+        store,
+        options=options,
+    )
+
+    first._ensure_offsets(("normal_001",))
+    second._ensure_offsets(("tumor_001",))
+    first._ensure_offsets(("test_001",))
+
+    offsets = store.load_offsets()
+    assert tuple(offsets) == slide_ids
+    assert offsets["normal_001"].offset == 0
+    assert offsets["test_001"].offset == CELL_ID_SLIDE_BLOCK_SIZE
+    assert offsets["tumor_001"].offset == 2 * CELL_ID_SLIDE_BLOCK_SIZE
+
+
+def test_incompatible_offset_table_fails_closed_without_rewriting_it(tmp_path: Path) -> None:
+    adapter = MiniAdapter(tmp_path, ("normal_001",))
+    _write_embedding(
+        adapter.embedding_location("normal_001", 2.5).path,
+        "normal_001",
+        2.5,
+    )
+    store = ArtifactStore(tmp_path / "artifacts")
+    store.root.mkdir(parents=True)
+    store.offsets_path.write_text("{corrupt", encoding="utf-8")
+    before = store.offsets_path.read_bytes()
+    processor = Preprocessor(
+        adapter,
+        HDF5EmbeddingProvider(adapter),
+        PillowSlideReader(),
+        store,
+    )
+
+    with pytest.raises(ArtifactCompatibilityError, match="invalid cell-offset table"):
+        processor._ensure_offsets(("normal_001",))
+
+    assert store.offsets_path.read_bytes() == before
+
+
+def test_preprocess_can_leave_global_index_untouched(tmp_path: Path) -> None:
+    adapter, provider = _fixture(tmp_path)
+    store = ArtifactStore(tmp_path / "artifacts")
+    processor = Preprocessor(
+        adapter,
+        provider,
+        PillowSlideReader(),
+        store,
+        options=PreprocessingOptions(
+            overview_size=32,
+            tissue_source="existing",
+            tissue_cache_root=tmp_path / "tissue-cache",
+        ),
+    )
+
+    results = processor.preprocess(("normal_001",), write_index=False)
+
+    assert len(results) == 1
+    assert store.load_metadata("normal_001")["status"] == "complete"
+    assert store.offsets_path.is_file()
+    assert not store.index_path.exists()
+
+
+def test_waiting_slide_builder_rechecks_before_materialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter, provider = _fixture(tmp_path)
+    store = ArtifactStore(tmp_path / "artifacts")
+    options = PreprocessingOptions(
+        overview_size=32,
+        tissue_source="existing",
+        tissue_cache_root=tmp_path / "tissue-cache",
+        concurrent_writes=True,
+    )
+    Preprocessor(adapter, provider, PillowSlideReader(), store, options=options).preprocess(
+        ("normal_001",)
+    )
+    waiting = Preprocessor(adapter, provider, PillowSlideReader(), store, options=options)
+    original_reuse = waiting._reuse_slide_result
+    checks = 0
+
+    def simulate_race(slide_id: str, input_fingerprint: str, *, overwrite: bool):
+        nonlocal checks
+        checks += 1
+        if checks == 1:
+            return None
+        return original_reuse(slide_id, input_fingerprint, overwrite=overwrite)
+
+    def fail_materialization(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("a waiting builder must reuse the completed slide")
+
+    monkeypatch.setattr(waiting, "_reuse_slide_result", simulate_race)
+    monkeypatch.setattr(waiting, "_materialize_tissue", fail_materialization)
+
+    result = waiting.preprocess_slide("normal_001")
+
+    assert checks == 2
+    assert result.reused
+
+
 def test_cell_count_must_fit_fixed_slide_block(tmp_path: Path) -> None:
     adapter = MiniAdapter(tmp_path, ("normal_001",))
 
@@ -311,3 +438,66 @@ def test_processed_episode_source_preserves_letterbox_and_hdf5_source_row(tmp_pa
     viewport = source.read_viewport("normal_001", right, 32)
     assert viewport.shape == (32, 32, 3)
     assert np.all(viewport[:, -1] >= 250)  # nominal 512px cell overhang is padded white
+
+
+def test_processed_test_source_is_pinned_to_immutable_index_entry(tmp_path: Path) -> None:
+    pytest.importorskip("gymnasium")
+    adapter, provider = _fixture(tmp_path)
+    store = ArtifactStore(tmp_path / "artifacts")
+    Preprocessor(
+        adapter,
+        provider,
+        PillowSlideReader(),
+        store,
+        options=PreprocessingOptions(
+            overview_size=32,
+            tissue_source="existing",
+            tissue_cache_root=tmp_path / "tissue-cache",
+        ),
+    ).preprocess()
+    split = DatasetSplit(
+        dataset="mini",
+        seed=1,
+        validation_fraction=0.5,
+        strategy="slide",
+        assignments=(
+            SplitAssignment("normal_001", 0, "test"),
+            SplitAssignment("tumor_001", 1, "train"),
+        ),
+    )
+    metadata = store.load_metadata("normal_001")
+    expectation = {
+        "slide_id": "normal_001",
+        "slide_index": metadata["slide_index"],
+        "metadata": "slides/normal_001/metadata.json",
+        "metadata_fingerprint": fingerprint(metadata),
+        "input_fingerprint": metadata["input_fingerprint"],
+        "cell_id_offset": metadata["cell_id_offset"],
+        "num_cells": metadata["num_cells"],
+    }
+    source = ProcessedEpisodeSource(
+        adapter,
+        provider,
+        PillowSlideReader(),
+        store,
+        split,
+        allow_test=True,
+        artifact_expectations={"normal_001": expectation},
+    )
+
+    assert source.load_slide("normal_001").slide_id == "normal_001"
+    source.close()
+
+    stale = {**expectation, "input_fingerprint": "replaced-generation"}
+    stale_source = ProcessedEpisodeSource(
+        adapter,
+        provider,
+        PillowSlideReader(),
+        store,
+        split,
+        allow_test=True,
+        artifact_expectations={"normal_001": stale},
+    )
+    with pytest.raises(ArtifactCompatibilityError, match="immutable index"):
+        stale_source.load_slide("normal_001")
+    stale_source.close()

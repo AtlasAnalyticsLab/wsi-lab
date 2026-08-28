@@ -489,6 +489,86 @@ def test_observation_contract_and_initial_visit() -> None:
     env.close()
 
 
+def test_lightweight_evaluation_preserves_navigation_state_without_rgb_work() -> None:
+    class CountingSource(SyntheticEpisodeSource):
+        def __post_init__(self) -> None:
+            super().__post_init__()
+            self.viewport_reads = 0
+
+        def read_viewport(
+            self, slide_id: str, cell: NavigationCell, output_size: int
+        ) -> np.ndarray:
+            self.viewport_reads += 1
+            return super().read_viewport(slide_id, cell, output_size)
+
+    standard_source = CountingSource(overview_size=32)
+    lightweight_source = CountingSource(overview_size=32)
+    standard = make_env(
+        source=standard_source,
+        belief=DeterministicBelief(),
+        overview_size=32,
+        viewport_size=24,
+        max_episode_steps=20,
+    )
+    lightweight = make_env(
+        source=lightweight_source,
+        belief=DeterministicBelief(),
+        overview_size=32,
+        viewport_size=24,
+        max_episode_steps=20,
+        lightweight_evaluation=True,
+    )
+
+    standard_observation, standard_info = standard.reset(
+        seed=3, options={"slide_id": "synthetic_cancer"}
+    )
+    lightweight_observation, lightweight_info = lightweight.reset(
+        seed=3, options={"slide_id": "synthetic_cancer"}
+    )
+    assert set(lightweight_observation) == {"scalars"}
+    np.testing.assert_allclose(lightweight_observation["scalars"], standard_observation["scalars"])
+    np.testing.assert_array_equal(
+        lightweight_info["action_mask"], standard_info["action_mask"]
+    )
+
+    for action in (
+        Action.PAN_UP,
+        Action.PAN_LEFT,
+        Action.ZOOM_IN_TL,
+        Action.ZOOM_IN_TL,
+        Action.ZOOM_IN_TL,
+    ):
+        standard_observation, standard_reward, _, _, standard_info = standard.step(action)
+        lightweight_observation, lightweight_reward, _, _, lightweight_info = lightweight.step(
+            action
+        )
+        assert lightweight_reward == pytest.approx(standard_reward)
+        np.testing.assert_allclose(
+            lightweight_observation["scalars"], standard_observation["scalars"]
+        )
+        np.testing.assert_array_equal(
+            lightweight_info["action_mask"], standard_info["action_mask"]
+        )
+        for field in (
+            "cell_id",
+            "belief",
+            "unique_evidence_count",
+            "actions_taken",
+            "revisit_rate",
+            "inspected_fraction",
+            "magnification_histogram",
+        ):
+            assert lightweight_info[field] == standard_info[field]
+
+    assert standard_source.viewport_reads == 6
+    assert lightweight_source.viewport_reads == 0
+    assert lightweight.unwrapped.trajectory == ()
+    with pytest.raises(RuntimeError, match="lightweight evaluation"):
+        lightweight.render()
+    standard.close()
+    lightweight.close()
+
+
 def test_invalid_action_is_noop_without_budget_or_visit() -> None:
     env = make_test_env()
     before, info = env.reset(seed=1, options={"slide_id": "synthetic_benign"})

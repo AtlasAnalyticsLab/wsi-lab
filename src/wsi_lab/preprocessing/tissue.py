@@ -8,7 +8,7 @@ import math
 import os
 import tempfile
 from collections.abc import Mapping
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +19,7 @@ from numpy.typing import NDArray
 from PIL import Image
 
 from wsi_lab.errors import ArtifactCompatibilityError, PreprocessingError
+from wsi_lab.preprocessing.artifacts import advisory_lock
 from wsi_lab.preprocessing.atlaspatch import (
     ATLASPATCH_MODEL_FILENAME,
     ATLASPATCH_MODEL_REPOSITORY,
@@ -250,6 +251,10 @@ def _atomic_save_npy(path: Path, value: np.ndarray) -> None:
 
 def _generated_manifest_path(mask_path: Path) -> Path:
     return mask_path.with_name(f"{mask_path.name}.manifest.json")
+
+
+def _generated_lock_path(mask_path: Path) -> Path:
+    return mask_path.with_name(f"{mask_path.name}.lock")
 
 
 def _cache_normalized_existing_mask(
@@ -524,6 +529,7 @@ def load_or_create_tissue_mask(
     atlaspatch_options: AtlasPatchOptions | Mapping[str, Any] | None = None,
     atlaspatch_runner: AtlasPatchRunner | None = None,
     mpp: tuple[float | None, float | None] | None = None,
+    concurrent_writes: bool = False,
 ) -> TissueMask:
     """Reuse a verified mask or generate one through the AtlasPatch CLI.
 
@@ -622,67 +628,87 @@ def load_or_create_tissue_mask(
                 threshold=threshold,
             )
         except ArtifactCompatibilityError:
-            LOGGER.warning(
-                "Generated tissue cache is stale or invalid; AtlasPatch will rerun", exc_info=True
-            )
+            # Another process may currently be publishing this cache. Recheck
+            # under the per-mask lock before deciding that AtlasPatch must run.
+            pass
 
     generated.parent.mkdir(parents=True, exist_ok=True)
-    atomic_json_dump(
-        _generated_manifest_path(generated),
-        {
-            "schema_version": 2,
-            "artifact_type": "tissue_mask",
-            "status": "incomplete",
-            "base_fingerprint": expected_base_fingerprint,
-            "slide_id": slide.stem,
-        },
+    generation_lock = (
+        advisory_lock(_generated_lock_path(generated)) if concurrent_writes else nullcontext()
     )
-    with tempfile.TemporaryDirectory(
-        prefix=f".{slide.stem}.atlaspatch.", dir=generated.parent
-    ) as temporary:
-        result = runner.run(slide, temporary, mpp=mpp)
-        native, page, details = _read_native_mask(result.mask_path, transform)
-        normalized = _place_content_mask(native, transform)
-        _atomic_save_npy(generated, normalized)
-        provenance = {
-            **dict(result.provenance),
-            "selected_mask_page": page,
-            "alignment": details,
-            "overview_transform": transform.to_dict(),
-            "normalized_shape": list(normalized.shape),
-            "normalized_dtype": str(normalized.dtype),
-        }
-        checkpoint_identity = _checkpoint_identity_from_provenance(provenance)
-        complete_fingerprint = _cache_fingerprint(
-            slide,
-            transform,
-            options,
-            checkpoint_identity,
-        )
-        manifest = {
-            "schema_version": 2,
-            "artifact_type": "tissue_mask",
-            "status": "complete",
-            "base_fingerprint": expected_base_fingerprint,
-            "checkpoint_identity": checkpoint_identity,
-            "fingerprint": complete_fingerprint,
-            "created_at": datetime.now(UTC).isoformat(),
-            "slide_id": slide.stem,
-            "mask_path": str(generated),
-            "normalized_mask": {
-                "size": generated.stat().st_size,
-                "sha256": sha256_file(generated),
+    with generation_lock:
+        if not rebuild and generated.is_file() and _generated_manifest_path(generated).is_file():
+            try:
+                return _load_generated_mask(
+                    generated,
+                    expected_base_fingerprint=expected_base_fingerprint,
+                    slide_path=slide,
+                    options=options,
+                    transform=transform,
+                    threshold=threshold,
+                )
+            except ArtifactCompatibilityError:
+                LOGGER.warning(
+                    "Generated tissue cache is stale or invalid; AtlasPatch will rerun",
+                    exc_info=True,
+                )
+
+        atomic_json_dump(
+            _generated_manifest_path(generated),
+            {
+                "schema_version": 2,
+                "artifact_type": "tissue_mask",
+                "status": "incomplete",
+                "base_fingerprint": expected_base_fingerprint,
+                "slide_id": slide.stem,
             },
-            "provenance": provenance,
-        }
-        atomic_json_dump(_generated_manifest_path(generated), manifest)
-    return TissueMask(
-        values=normalized,
-        source="atlaspatch",
-        threshold=threshold,
-        source_path=generated,
-        provenance=provenance,
-    )
+        )
+        with tempfile.TemporaryDirectory(
+            prefix=f".{slide.stem}.atlaspatch.", dir=generated.parent
+        ) as temporary:
+            result = runner.run(slide, temporary, mpp=mpp)
+            native, page, details = _read_native_mask(result.mask_path, transform)
+            normalized = _place_content_mask(native, transform)
+            _atomic_save_npy(generated, normalized)
+            provenance = {
+                **dict(result.provenance),
+                "selected_mask_page": page,
+                "alignment": details,
+                "overview_transform": transform.to_dict(),
+                "normalized_shape": list(normalized.shape),
+                "normalized_dtype": str(normalized.dtype),
+            }
+            checkpoint_identity = _checkpoint_identity_from_provenance(provenance)
+            complete_fingerprint = _cache_fingerprint(
+                slide,
+                transform,
+                options,
+                checkpoint_identity,
+            )
+            manifest = {
+                "schema_version": 2,
+                "artifact_type": "tissue_mask",
+                "status": "complete",
+                "base_fingerprint": expected_base_fingerprint,
+                "checkpoint_identity": checkpoint_identity,
+                "fingerprint": complete_fingerprint,
+                "created_at": datetime.now(UTC).isoformat(),
+                "slide_id": slide.stem,
+                "mask_path": str(generated),
+                "normalized_mask": {
+                    "size": generated.stat().st_size,
+                    "sha256": sha256_file(generated),
+                },
+                "provenance": provenance,
+            }
+            atomic_json_dump(_generated_manifest_path(generated), manifest)
+        return TissueMask(
+            values=normalized,
+            source="atlaspatch",
+            threshold=threshold,
+            source_path=generated,
+            provenance=provenance,
+        )
 
 
 def _tissue_sums_and_areas(

@@ -111,7 +111,9 @@ wsi-lab train-belief --config configs/camelyon16.yaml
 wsi-lab eval-belief --config configs/camelyon16.yaml --split val
 wsi-lab train-rl --config configs/camelyon16.yaml
 wsi-lab eval-rl --config configs/camelyon16.yaml --split val
+wsi-lab prepare-test --config configs/camelyon16.yaml --allow-test
 wsi-lab eval-rl --config configs/camelyon16.yaml --split test --allow-test
+wsi-lab eval-baselines --config configs/camelyon16.yaml --split test --allow-test
 wsi-lab manual-play --config configs/camelyon16.yaml --split val
 wsi-lab render-trajectory --config configs/camelyon16.yaml --trajectory trajectory.json
 wsi-lab benchmark-env --config configs/camelyon16.yaml
@@ -179,6 +181,43 @@ report and can evaluate checkpoints from an interrupted training experiment;
 PPO manifest completion is not required. When `--config` points to a saved
 `<run>/config.yaml`, that run is recognized automatically. Use `--run-dir RUN`
 to select it explicitly when needed.
+
+Authorized test navigation artifacts are an immutable, fingerprinted
+evaluation cache and never become a training dependency. The command
+`wsi-lab prepare-test --config CONFIG --allow-test` materializes that cache
+once. For concurrent cluster evaluation,
+submit one preparation job and make the evaluator array depend on its successful
+completion, then pass `--test-artifacts require` to each `eval-rl` or
+`eval-baselines` job. `require` is read-only and fails if the exact cache is not
+ready. The default `--test-artifacts auto` preserves the single-evaluator
+workflow: a completed cache is reused after read-only compatibility checks,
+while a missing cache is built by exactly one process under a
+fingerprint-scoped lock. Test environments lazily verify each loaded slide
+against the immutable index, so a replaced or stale slide generation fails
+closed instead of being evaluated silently.
+
+`eval-baselines` evaluates the frozen calibrated belief model with random and
+serpentine-raster navigation; it never loads a PPO checkpoint. Its default
+comparison uses symmetric confidence thresholds `0.5` and `0.9` after at
+least 32 unique evidence patches, with a 500-total-action cap, and fixed
+navigation-step budgets `1 4 8 16 32 64 128 256 500`. A step budget `K`
+records the belief after exactly `K` navigation actions and then applies one
+additional diagnosis action, so its total episode length is `K + 1`. Zooms and
+revisits count as navigation steps; the report separately records how many
+unique evidence patches those steps produced. The random seed defaults to
+`rl.seed` from the selected config.
+
+All conditions for both navigators are written to one atomic report beside the
+shared belief checkpoint as
+`evaluation_<split>_navigation_baseline_sweep.json`. Use `--output PATH` to
+select another report path. Provenance includes the calibrated checkpoint path
+and SHA-256, temperature, dependency and architecture payloads, verified split
+label counts, authorized-test preprocessing fingerprint, and configured versus
+effective evaluation limits. The protocol can be reproduced or narrowed with
+`--navigators`, `--thresholds`, `--confidence-min-evidence`,
+`--step-budgets`, `--confidence-max-total-actions`, and `--random-seed`.
+Official-test use is guarded by the same explicit
+`--split test --allow-test` requirement as the other evaluators.
 
 View every run while it is training with:
 

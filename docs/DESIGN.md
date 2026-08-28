@@ -152,6 +152,23 @@ manifest, so the latest compatible checkpoint from interrupted training remains
 evaluable. A saved run-local configuration selects its parent run, with
 `--run-dir` available as an explicit override.
 
+`eval-baselines` is independent of PPO checkpoint selection. It evaluates the
+same frozen calibrated belief model along paired random and serpentine-raster
+routes. For each navigator and slide, one diagnosis-free route supplies every
+confidence and fixed-step prefix, so changing a stopping condition cannot
+change the patches seen by another condition. Random routes use stable
+per-slide seeds, making every budget a prefix of the same route.
+
+Confidence endpoints require the configured sweep evidence floor, stop when
+the calibrated belief exits `[1-threshold, threshold]`, and otherwise use the
+configured total-action cap. Fixed endpoints are indexed by an exact number of
+navigation actions. The belief is read after step `K` and one diagnosis action
+is added, producing total episode length `K + 1`; zooms and revisits count
+toward `K`, while unique evidence remains an independently reported trajectory
+outcome. Evaluation-only action-mask and episode-length overrides allow this
+shared prefix collection without changing persisted configuration or any
+training fingerprint.
+
 This post-training sequence is one-way:
 
 ```text
@@ -160,5 +177,20 @@ train PPO -> validate/select best + save latest -> freeze both roles -> evaluate
 
 Test labels, rewards, predictions, and metrics cannot update either policy,
 select between the two checkpoint roles, change a stage fingerprint, or enter
-resume compatibility. Test navigation artifacts are recorded separately in
-`test_evaluation_preprocessing.json` with `training_dependency: false`.
+resume compatibility. Test navigation artifacts are recorded separately under
+`test_evaluations/<evaluation-fingerprint>/` with `training_dependency: false`.
+The manifest and test index are published atomically after preparation and are
+immutable once complete. A fingerprint-scoped process lock and a post-lock
+manifest check guarantee one builder for concurrent automatic preparation.
+Cluster evaluator arrays can instead use the strictly read-only
+`--test-artifacts require` mode after one explicit `prepare-test` job. The
+automatic lock relies on POSIX `flock` support from the shared filesystem;
+`require` performs no preprocessing writes and therefore avoids that runtime
+coordination path entirely. The validated index is passed into the test episode
+source, which compares each slide's input fingerprint, deterministic index,
+cell offset, cell count, and (for newly created indexes) complete metadata
+fingerprint on first load. This pins evaluation to the prepared slide
+generation without scanning every slide up front. Concurrency coordination is
+an operational option enabled by the evaluator's cold builder; the normal
+training preprocessing path leaves that option disabled and retains its prior
+artifact semantics.

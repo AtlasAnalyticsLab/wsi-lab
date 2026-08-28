@@ -6,11 +6,11 @@ import json
 import os
 import tempfile
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -24,9 +24,11 @@ from wsi_lab.preprocessing.geometry import (
     validate_geometry,
 )
 from wsi_lab.preprocessing.mapping import MappingSummary
-from wsi_lab.preprocessing.tissue import TissueMask
 from wsi_lab.utils.atomic import atomic_json_dump
 from wsi_lab.wsi.reader import OverviewTransform
+
+if TYPE_CHECKING:
+    from wsi_lab.preprocessing.tissue import TissueMask
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,9 +72,17 @@ def atomic_save_npy(path: str | Path, value: np.ndarray) -> None:
 
 
 @contextmanager
-def _advisory_lock(path: Path) -> Iterator[None]:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+def advisory_lock(path: str | Path) -> Iterator[None]:
+    """Hold an exclusive, cross-process advisory lock for ``path``.
+
+    Lock files are persistent coordination points; their contents are unused.
+    The POSIX lock is released automatically when the context exits, including
+    when an exception is raised.
+    """
+
+    target = Path(path).expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(target, os.O_CREAT | os.O_RDWR, 0o644)
     try:
         try:
             import fcntl
@@ -118,6 +128,14 @@ class ArtifactStore:
     def index_path(self) -> Path:
         return self.root / "slides.json"
 
+    @property
+    def offsets_lock_path(self) -> Path:
+        return self.root / ".cell_offsets.lock"
+
+    @property
+    def index_lock_path(self) -> Path:
+        return self.root / ".slides_index.lock"
+
     def slide_paths(self, slide_id: str) -> SlideArtifactPaths:
         if not slide_id or Path(slide_id).name != slide_id or slide_id in {".", ".."}:
             raise ValueError(f"unsafe slide ID: {slide_id!r}")
@@ -135,6 +153,13 @@ class ArtifactStore:
         if not slide_id or Path(slide_id).name != slide_id:
             raise ValueError(f"unsafe slide ID: {slide_id!r}")
         return self.root / "generated_tissue" / f"{slide_id}.npy"
+
+    @contextmanager
+    def slide_build_lock(self, slide_id: str) -> Iterator[None]:
+        """Serialize inspection/materialization/publication for one slide."""
+
+        with advisory_lock(self.slide_paths(slide_id).lock):
+            yield
 
     def write_offsets(
         self,
@@ -250,9 +275,11 @@ class ArtifactStore:
         embedding_sources: Mapping[float, Mapping[str, Any]],
         mapping_summaries: Mapping[float, MappingSummary],
         overwrite: bool = False,
+        lock_held: bool = False,
     ) -> dict[str, Any]:
         paths = self.slide_paths(geometry.slide_id)
-        with _advisory_lock(paths.lock):
+        lock_context = nullcontext() if lock_held else advisory_lock(paths.lock)
+        with lock_context:
             if not overwrite and self.is_slide_complete(
                 geometry.slide_id, expected_input_fingerprint=input_fingerprint
             ):
@@ -519,6 +546,19 @@ class ArtifactStore:
         slide_ids: list[str] | tuple[str, ...],
         *,
         merge: bool = False,
+        coordinate_writes: bool = False,
+    ) -> None:
+        """Atomically publish the global slide index, optionally under a lock."""
+
+        lock_context = advisory_lock(self.index_lock_path) if coordinate_writes else nullcontext()
+        with lock_context:
+            self._write_index_locked(slide_ids, merge=merge)
+
+    def _write_index_locked(
+        self,
+        slide_ids: list[str] | tuple[str, ...],
+        *,
+        merge: bool,
     ) -> None:
         selected = list(dict.fromkeys(slide_ids))
         if merge and self.index_path.is_file():
@@ -564,5 +604,6 @@ __all__ = [
     "ArtifactStore",
     "SlideArtifactPaths",
     "SlideOffset",
+    "advisory_lock",
     "atomic_save_npy",
 ]

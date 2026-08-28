@@ -4,6 +4,7 @@ import inspect
 import json
 import sys
 from argparse import Namespace
+from hashlib import sha256
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -178,11 +179,21 @@ def test_eval_rl_infers_incomplete_run_from_saved_config_snapshot(
     monkeypatch.setattr(cli, "load_config", lambda _: object())
     monkeypatch.setattr(cli, "_evaluate_rl_command", evaluate)
     arguments = cli.build_parser().parse_args(
-        ("eval-rl", "--config", str(config_path), "--split", "test", "--allow-test")
+        (
+            "eval-rl",
+            "--config",
+            str(config_path),
+            "--split",
+            "test",
+            "--allow-test",
+            "--test-artifacts",
+            "require",
+        )
     )
 
     assert cli._dispatch(arguments) == 0
     assert captured["kwargs"]["run_directory"] == run_dir.resolve()
+    assert captured["kwargs"]["test_artifact_mode"] == "require"
 
 
 def test_eval_rl_explicit_run_directory_overrides_saved_config_parent(tmp_path: Path) -> None:
@@ -194,6 +205,145 @@ def test_eval_rl_explicit_run_directory_overrides_saved_config_parent(tmp_path: 
     )
 
     assert arguments.run_dir == explicit
+    assert arguments.test_artifacts == "auto"
+
+
+def test_prepare_test_parser_requires_explicit_test_authorization() -> None:
+    arguments = cli.build_parser().parse_args(
+        ("prepare-test", "--config", "config.yaml", "--allow-test")
+    )
+
+    assert arguments.command == "prepare-test"
+    assert arguments.allow_test is True
+
+
+def test_prepare_test_dispatch_uses_explicit_prepare_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(cli, "load_config", lambda _: "loaded-config")
+
+    def prepare(*args, **kwargs):
+        captured.update(args=args, kwargs=kwargs)
+        return {"status": "complete"}
+
+    monkeypatch.setattr(cli, "_prepare_authorized_test_preprocessing", prepare)
+    arguments = cli.build_parser().parse_args(
+        ("prepare-test", "--config", "config.yaml", "--allow-test")
+    )
+
+    assert cli._dispatch(arguments) == 0
+    assert captured == {
+        "args": ("loaded-config",),
+        "kwargs": {"mode": "prepare"},
+    }
+
+
+def test_prepare_test_dispatch_rejects_missing_authorization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "load_config", lambda _: object())
+    monkeypatch.setattr(
+        cli,
+        "_prepare_authorized_test_preprocessing",
+        lambda *_args, **_kwargs: pytest.fail("preparation ran before the test guard"),
+    )
+    arguments = cli.build_parser().parse_args(("prepare-test", "--config", "config.yaml"))
+
+    with pytest.raises(TestSplitAccessError, match="--allow-test"):
+        cli._dispatch(arguments)
+
+
+def test_eval_baselines_parser_defaults_match_comparison_protocol() -> None:
+    arguments = cli.build_parser().parse_args(("eval-baselines", "--config", "config.yaml"))
+
+    assert tuple(arguments.navigators) == ("random", "raster")
+    assert tuple(arguments.thresholds) == (0.5, 0.9)
+    assert arguments.confidence_min_evidence == 32
+    assert tuple(arguments.step_budgets) == (1, 4, 8, 16, 32, 64, 128, 256, 500)
+    assert arguments.confidence_max_total_actions == 500
+    assert arguments.random_seed is None
+    assert arguments.output is None
+    assert arguments.test_artifacts == "auto"
+
+
+def test_eval_baselines_parser_accepts_explicit_protocol_and_output(tmp_path: Path) -> None:
+    output = tmp_path / "comparison.json"
+    arguments = cli.build_parser().parse_args(
+        (
+            "eval-baselines",
+            "--config",
+            "config.yaml",
+            "--split",
+            "test",
+            "--allow-test",
+            "--test-artifacts",
+            "require",
+            "--navigators",
+            "raster",
+            "--thresholds",
+            "0.75",
+            "--confidence-min-evidence",
+            "8",
+            "--step-budgets",
+            "2",
+            "16",
+            "--confidence-max-total-actions",
+            "300",
+            "--random-seed",
+            "17",
+            "--output",
+            str(output),
+        )
+    )
+
+    assert arguments.split == "test"
+    assert arguments.allow_test is True
+    assert arguments.test_artifacts == "require"
+    assert arguments.navigators == ["raster"]
+    assert arguments.thresholds == [0.75]
+    assert arguments.confidence_min_evidence == 8
+    assert arguments.step_budgets == [2, 16]
+    assert arguments.confidence_max_total_actions == 300
+    assert arguments.random_seed == 17
+    assert arguments.output == output
+
+
+def test_evaluation_context_resolves_shared_dependencies_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    split = object()
+    calls = {"fingerprints": 0, "paths": 0, "split": 0, "dimension": 0}
+
+    def fingerprints(_config):
+        calls["fingerprints"] += 1
+        return {Stage.PREPROCESSING: "preprocessing"}
+
+    def paths(_config, _fingerprints):
+        calls["paths"] += 1
+        return {Stage.PREPROCESSING: tmp_path / "processed/manifest.json"}
+
+    def load_split(_config):
+        calls["split"] += 1
+        return split
+
+    def dimension(_config, *, split):
+        calls["dimension"] += 1
+        assert split is not None
+        return 1536
+
+    monkeypatch.setattr(cli, "stage_fingerprints", fingerprints)
+    monkeypatch.setattr(cli, "artifact_paths", paths)
+    monkeypatch.setattr(cli, "_load_verified_split", load_split)
+    monkeypatch.setattr(cli, "_active_embedding_dimension", dimension)
+    context = cli._EvaluationContext(config)
+
+    assert context.fingerprints is context.fingerprints
+    assert context.paths is context.paths
+    assert context.split is context.split
+    assert context.embedding_dimension == context.embedding_dimension == 1536
+    assert calls == {"fingerprints": 1, "paths": 1, "split": 1, "dimension": 1}
 
 
 def test_belief_data_stage_passes_only_development_ids_and_disables_wsi_access(
@@ -346,11 +496,76 @@ def test_production_environment_enables_augmentation_only_for_training(
         config,
         split_name="train" if not evaluation else "val",
         evaluation=evaluation,
+        max_episode_steps_override=701,
+        min_diagnostic_evidence_override=0,
     )
 
     assert environment["source"] is source
     assert environment["geometric_augmentation"] is expected
     assert environment["photometric_augmentation"] is expected
+    assert environment["max_episode_steps"] == 701
+    assert environment["min_diagnostic_evidence"] == 0
+    assert environment["lightweight_evaluation"] is False
+
+
+def test_test_environment_receives_immutable_artifact_expectations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    split = object()
+    source = object()
+    expectations = {"test_001": {"input_fingerprint": "prepared-generation"}}
+    captured: dict[str, Any] = {}
+
+    class EpisodeSource:
+        @classmethod
+        def from_config(cls, *args, **kwargs):
+            captured.update(args=args, kwargs=kwargs)
+            return source
+
+    class Accumulator:
+        def __init__(self, model, *, temperature) -> None:
+            del model, temperature
+
+    _fake_module(
+        monkeypatch,
+        "wsi_lab.preprocessing.pipeline",
+        ProcessedEpisodeSource=EpisodeSource,
+    )
+    _fake_module(
+        monkeypatch,
+        "wsi_lab.belief.accumulator",
+        BeliefAccumulator=Accumulator,
+    )
+    _fake_module(
+        monkeypatch,
+        "wsi_lab.envs.wsi_env",
+        WSIEnv=lambda episode_source, belief, **kwargs: {
+            "source": episode_source,
+            "belief": belief,
+            **kwargs,
+        },
+    )
+    monkeypatch.setattr(cli, "_preprocessing_store", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        cli,
+        "_load_active_belief",
+        lambda *_args, **_kwargs: (object(), 1.0, {}),
+    )
+    context = SimpleNamespace(split=split, test_artifact_entries=expectations)
+
+    environment = cli._make_production_environment(
+        config,
+        split_name="test",
+        evaluation=True,
+        allow_test=True,
+        context=context,  # type: ignore[arg-type]
+    )
+
+    assert environment["source"] is source
+    assert captured["kwargs"]["allow_test"] is True
+    assert captured["kwargs"]["artifact_expectations"] is expectations
 
 
 @pytest.mark.parametrize(
@@ -390,6 +605,15 @@ def test_ppo_stage_resumes_only_for_explicit_resume_decision(
         def close(self) -> None:
             pass
 
+    class Tracker:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.best = None
+
+    _fake_module(
+        monkeypatch,
+        "wsi_lab.rl.best_checkpoint",
+        BestValidationCheckpointTracker=Tracker,
+    )
     _fake_module(
         monkeypatch,
         "wsi_lab.rl.evaluation",
@@ -717,17 +941,20 @@ def test_ppo_test_evaluation_reports_best_and_latest_in_one_document(
     best.touch()
     latest.touch()
     calls: list[tuple[str, Path | None]] = []
+    contexts: list[cli._EvaluationContext] = []
     preprocessing_calls = 0
 
-    def preprocess(_config: AppConfig) -> dict[str, str]:
+    def preprocess(_config: AppConfig, **_kwargs: Any) -> dict[str, str]:
         nonlocal preprocessing_calls
         preprocessing_calls += 1
+        contexts.append(_kwargs["context"])
         return {"status": "complete"}
 
     def evaluate(*_args, **kwargs) -> dict[str, Any]:
         selection = str(kwargs["checkpoint_selection"])
         selected_path = kwargs["checkpoint_path"]
         calls.append((selection, selected_path))
+        contexts.append(kwargs["context"])
         path = best if selection == "best_validation" else latest
         step = 8 if selection == "best_validation" else 16
         return {
@@ -765,14 +992,13 @@ def test_ppo_test_evaluation_reports_best_and_latest_in_one_document(
 
     assert preprocessing_calls == 1
     assert calls == [("latest", None), ("best_validation", best)]
+    assert len(contexts) == 3
+    assert all(context is contexts[0] for context in contexts)
     assert result["schema_version"] == 2
     assert result["split"] == "test"
     assert result["evaluations"]["best_validation"]["status"] == "complete"
     assert result["evaluations"]["best_validation"]["metrics"]["accuracy"] == 0.8
-    assert (
-        result["evaluations"]["best_validation"]["ppo_patches_belief_metrics"]["accuracy"]
-        == 0.9
-    )
+    assert result["evaluations"]["best_validation"]["ppo_patches_belief_metrics"]["accuracy"] == 0.9
     assert result["evaluations"]["latest"]["status"] == "complete"
     assert result["evaluations"]["latest"]["metrics"]["accuracy"] == 0.7
     assert result["evaluations"]["latest"]["ppo_patches_belief_metrics"]["accuracy"] == 0.85
@@ -783,6 +1009,7 @@ def test_ppo_test_evaluation_reports_best_and_latest_in_one_document(
         "policy": "ppo",
         "split": "test",
         "evaluations": result["evaluations"],
+        "test_preprocessing": {"status": "complete"},
     }
 
 
@@ -853,7 +1080,9 @@ def test_unavailable_best_checkpoint_does_not_suppress_latest_test_result(
         }
 
     monkeypatch.setattr(
-        cli, "_prepare_authorized_test_preprocessing", lambda _: {"status": "complete"}
+        cli,
+        "_prepare_authorized_test_preprocessing",
+        lambda *_args, **_kwargs: {"status": "complete"},
     )
     monkeypatch.setattr(
         cli,
@@ -910,7 +1139,7 @@ def test_ppo_evaluation_persists_resolved_checkpoint_provenance(
         to_dict=lambda: {
             "episodes": [],
             "metrics": {"accuracy": 0.75, "auroc": 0.82},
-        }
+        },
     )
     aggregate_calls: list[tuple[object, int]] = []
 
@@ -922,7 +1151,7 @@ def test_ppo_evaluation_persists_resolved_checkpoint_provenance(
     monkeypatch.setattr(
         cli,
         "_prepare_authorized_test_preprocessing",
-        lambda _: {"status": "complete"},
+        lambda *_args, **_kwargs: {"status": "complete"},
     )
     monkeypatch.setattr(
         cli,
@@ -1024,11 +1253,13 @@ def test_authorized_rl_test_evaluation_routes_through_separate_preprocessing(
         evaluate_baseline=object(),
         evaluate_policy=object(),
     )
-    monkeypatch.setattr(
-        cli,
-        "_prepare_authorized_test_preprocessing",
-        lambda *_: (_ for _ in ()).throw(RuntimeError("authorized test preprocessing")),
-    )
+
+    def prepare(*_args, **kwargs):
+        assert kwargs["mode"] == "require"
+        assert isinstance(kwargs["context"], cli._EvaluationContext)
+        raise RuntimeError("authorized test preprocessing")
+
+    monkeypatch.setattr(cli, "_prepare_authorized_test_preprocessing", prepare)
     monkeypatch.setattr(
         cli,
         "_make_production_environment",
@@ -1040,7 +1271,226 @@ def test_authorized_rl_test_evaluation_routes_through_separate_preprocessing(
             object(),
             "test",
             allow_test=True,  # type: ignore[arg-type]
+            test_artifact_mode="require",
         )
+
+
+def test_baseline_sweep_rejects_test_before_importing_the_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delitem(sys.modules, "wsi_lab.baselines.sweep", raising=False)
+
+    with pytest.raises(TestSplitAccessError, match="--allow-test"):
+        cli._evaluate_baselines_command(
+            object(),  # type: ignore[arg-type]
+            "test",
+            allow_test=False,
+        )
+
+
+def test_baseline_sweep_wires_protocol_environment_and_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    config.rl.seed = 23
+    belief_dir = tmp_path / "belief"
+    belief_dir.mkdir()
+    checkpoint_bytes = b"calibrated-checkpoint"
+    (belief_dir / "calibrated_checkpoint.pt").write_bytes(checkpoint_bytes)
+    atomic_json_dump(
+        belief_dir / "manifest.json",
+        {
+            "metadata": {
+                "architecture": {"embedding_dim": 1536, "hidden_dim": 512},
+                "dependencies": {"belief_stage": "belief-fingerprint"},
+                "temperature": 1.1,
+            }
+        },
+    )
+    atomic_json_dump(belief_dir / "temperature.json", {"temperature": 1.25})
+    captured: dict[str, Any] = {}
+
+    class Protocol:
+        def __init__(self, **kwargs) -> None:
+            captured["protocol"] = kwargs
+            for name, value in kwargs.items():
+                setattr(self, name, value)
+
+    def evaluate(environment_factory, navigator_names, episodes, protocol):
+        captured["navigator_names"] = navigator_names
+        captured["episodes"] = episodes
+        captured["protocol_object"] = protocol
+        captured["environment"] = environment_factory()
+        return {
+            "schema_version": 2,
+            "protocol": {"source": "core"},
+            "navigators": {"random": {}, "raster": {}},
+        }
+
+    _fake_module(
+        monkeypatch,
+        "wsi_lab.baselines.sweep",
+        SweepProtocol=Protocol,
+        evaluate_navigation_sweep=evaluate,
+    )
+    monkeypatch.setattr(
+        cli,
+        "_prepare_authorized_test_preprocessing",
+        lambda *_args, **_kwargs: {
+            "status": "complete",
+            "fingerprint": "authorized-test-preprocessing",
+            "training_dependency": False,
+        },
+    )
+    monkeypatch.setattr(
+        cli,
+        "_load_verified_split",
+        lambda _: SimpleNamespace(
+            ids=lambda name: ("test-a", "test-b") if name == "test" else (),
+            assignment=lambda slide_id: SimpleNamespace(label={"test-a": 0, "test-b": 1}[slide_id]),
+            split_fingerprint="verified-split",
+        ),
+    )
+
+    def make_environment(*args, **kwargs):
+        captured["environment_args"] = args
+        captured["environment_kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr(cli, "_make_production_environment", make_environment)
+    monkeypatch.setattr(
+        cli,
+        "stage_fingerprints",
+        lambda _: {
+            Stage.DATASET: "dataset-fingerprint",
+            Stage.PREPROCESSING: "preprocessing-fingerprint",
+            Stage.BELIEF: "belief-fingerprint",
+        },
+    )
+    monkeypatch.setattr(
+        cli,
+        "artifact_paths",
+        lambda *_: {Stage.BELIEF: belief_dir / "manifest.json"},
+    )
+
+    result = cli._evaluate_baselines_command(
+        config,
+        "test",
+        allow_test=True,
+    )
+
+    assert captured["navigator_names"] == ("random", "raster")
+    assert captured["episodes"] == 2
+    assert captured["protocol"] == {
+        "confidence_thresholds": (0.5, 0.9),
+        "step_budgets": (1, 4, 8, 16, 32, 64, 128, 256, 500),
+        "confidence_min_evidence": 32,
+        "confidence_max_total_actions": 500,
+        "random_seed": 23,
+        "ece_bins": 15,
+    }
+    assert captured["environment_args"] == (config,)
+    assert isinstance(captured["environment_kwargs"].pop("context"), cli._EvaluationContext)
+    assert captured["environment_kwargs"] == {
+        "split_name": "test",
+        "evaluation": True,
+        "allow_test": True,
+        "max_episode_steps_override": 501,
+        "min_diagnostic_evidence_override": 0,
+        "lightweight_evaluation_override": True,
+    }
+    assert result["evaluation_type"] == "navigation_baseline_sweep"
+    assert result["split"] == "test"
+    assert result["provenance"]["belief_fingerprint"] == "belief-fingerprint"
+    assert result["provenance"]["split_fingerprint"] == "verified-split"
+    assert result["provenance"]["test_preprocessing"]["training_dependency"] is False
+    assert (
+        result["provenance"]["authorized_test_preprocessing_fingerprint"]
+        == "authorized-test-preprocessing"
+    )
+    assert result["provenance"]["split_counts"] == {
+        "total": 2,
+        "positive": 1,
+        "negative": 1,
+        "unique_slide_count": 2,
+    }
+    assert result["provenance"]["belief_checkpoint"] == {
+        "path": str(belief_dir / "calibrated_checkpoint.pt"),
+        "sha256": sha256(checkpoint_bytes).hexdigest(),
+        "temperature": 1.25,
+        "dependencies": {"belief_stage": "belief-fingerprint"},
+        "architecture": {"embedding_dim": 1536, "hidden_dim": 512},
+        "manifest": str(belief_dir / "manifest.json"),
+        "temperature_file": str(belief_dir / "temperature.json"),
+    }
+    assert result["provenance"]["environment"] == {
+        "configured": {
+            "max_episode_steps": 500,
+            "min_diagnostic_evidence": 32,
+            "lightweight_evaluation": False,
+        },
+        "effective": {
+            "max_episode_steps": 501,
+            "min_diagnostic_evidence": 0,
+            "lightweight_evaluation": True,
+        },
+    }
+    output = belief_dir / "evaluation_test_navigation_baseline_sweep.json"
+    assert result["output"] == str(output)
+    assert json.loads(output.read_text(encoding="utf-8")) == {
+        key: value for key, value in result.items() if key != "output"
+    }
+
+
+def test_eval_baselines_dispatch_forwards_explicit_protocol(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(cli, "load_config", lambda _: "loaded-config")
+
+    def evaluate(*args, **kwargs):
+        captured.update(args=args, kwargs=kwargs)
+        return {"status": "mocked"}
+
+    monkeypatch.setattr(cli, "_evaluate_baselines_command", evaluate)
+    output = tmp_path / "sweep.json"
+    arguments = cli.build_parser().parse_args(
+        (
+            "eval-baselines",
+            "--config",
+            "config.yaml",
+            "--navigators",
+            "raster",
+            "--thresholds",
+            "0.8",
+            "--confidence-min-evidence",
+            "12",
+            "--step-budgets",
+            "4",
+            "64",
+            "--confidence-max-total-actions",
+            "250",
+            "--random-seed",
+            "19",
+            "--test-artifacts",
+            "require",
+            "--output",
+            str(output),
+        )
+    )
+
+    assert cli._dispatch(arguments) == 0
+    assert captured["args"] == ("loaded-config", "val", False)
+    assert captured["kwargs"] == {
+        "navigator_names": ("raster",),
+        "confidence_thresholds": (0.8,),
+        "confidence_min_evidence": 12,
+        "step_budgets": (4, 64),
+        "confidence_max_total_actions": 250,
+        "random_seed": 19,
+        "output_path": output,
+        "test_artifact_mode": "require",
+    }
 
 
 def test_authorized_test_preprocessing_requires_dev_manifest_and_processes_only_test_suffix(
@@ -1110,13 +1560,14 @@ def test_authorized_test_preprocessing_requires_dev_manifest_and_processes_only_
         def __init__(self, adapter, embeddings, reader, artifacts, *, options) -> None:
             assert artifacts.root == store.root
 
-        def preprocess(self, slide_ids, *, merge_index=False):
-            calls.append((tuple(slide_ids), merge_index))
+        def preprocess(self, slide_ids, *, write_index=True):
+            calls.append((tuple(slide_ids), write_index))
             return (SimpleNamespace(reused=False),)
 
     class Options:
         @classmethod
-        def from_config(cls, config, *, tissue_cache_root):
+        def from_config(cls, config, *, tissue_cache_root, concurrent_writes):
+            assert concurrent_writes is True
             return cls()
 
     split = SimpleNamespace(
@@ -1125,23 +1576,51 @@ def test_authorized_test_preprocessing_requires_dev_manifest_and_processes_only_
     )
     import wsi_lab.data.embeddings.hdf5 as hdf5_module
     import wsi_lab.preprocessing.pipeline as preprocessing_module
+    import wsi_lab.preprocessing.test_artifacts as test_artifacts_module
     import wsi_lab.wsi.reader as reader_module
+
+    manager_calls: list[dict[str, Any]] = []
+
+    def ensure_test_artifacts(**kwargs):
+        manager_calls.append(kwargs)
+        if kwargs["mode"] == "require":
+            assert kwargs["builder"] is None
+        else:
+            kwargs["builder"](tuple(kwargs["test_slide_ids"]))
+        return {
+            "status": "complete",
+            "scope": "authorized-official-test-evaluation",
+            "slides": len(kwargs["test_slide_ids"]),
+            "training_dependency": False,
+        }
 
     monkeypatch.setattr(cli, "_adapter", lambda _: Adapter())
     monkeypatch.setattr(cli, "_load_verified_split", lambda _: split)
     monkeypatch.setattr(hdf5_module, "HDF5EmbeddingProvider", lambda _: object())
     monkeypatch.setattr(preprocessing_module, "Preprocessor", Processor)
     monkeypatch.setattr(preprocessing_module, "PreprocessingOptions", Options)
+    monkeypatch.setattr(test_artifacts_module, "ensure_test_artifacts", ensure_test_artifacts)
     monkeypatch.setattr(reader_module, "OpenSlideReader", Reader)
 
     result = cli._prepare_authorized_test_preprocessing(config)
 
-    assert calls == [(("test_001",), True)]
+    assert calls == [(("test_001",), False)]
+    assert tuple(manager_calls[0]["test_slide_ids"]) == ("test_001",)
+    assert manager_calls[0]["mode"] == "auto"
     assert result["scope"] == "authorized-official-test-evaluation"
     assert result["slides"] == 1
     assert result["training_dependency"] is False
-    manifest = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
-    assert manifest["status"] == "complete"
+
+    manifest_before = paths[Stage.PREPROCESSING].read_bytes()
+    offsets_before = store.offsets_path.read_bytes()
+    required = cli._prepare_authorized_test_preprocessing(config, mode="require")
+
+    assert required["status"] == "complete"
+    assert calls == [(("test_001",), False)]
+    assert manager_calls[-1]["mode"] == "require"
+    assert paths[Stage.PREPROCESSING].read_bytes() == manifest_before
+    assert store.offsets_path.read_bytes() == offsets_before
+    assert not store.index_path.exists()
 
 
 def test_authorized_test_preprocessing_fails_closed_without_dev_manifest(
@@ -1312,6 +1791,7 @@ def test_train_rl_dry_run_never_opens_the_test_split(
     [
         (("eval-belief", "--config", "config.yaml"), "_evaluate_belief_command"),
         (("eval-rl", "--config", "config.yaml"), "_evaluate_rl_command"),
+        (("eval-baselines", "--config", "config.yaml"), "_evaluate_baselines_command"),
         (
             (
                 "render-trajectory",

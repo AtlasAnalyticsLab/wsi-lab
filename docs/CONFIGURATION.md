@@ -86,6 +86,35 @@ reported as unavailable and is never replaced or mislabeled with the latest
 checkpoint. A saved `<run>/config.yaml` selects its parent run automatically;
 `eval-rl --run-dir RUN` provides an explicit override.
 
+Navigation baselines have a separate reporting-only command and do not resolve
+or load a PPO run:
+
+```bash
+wsi-lab eval-baselines \
+  --config CONFIG.yaml \
+  --split test \
+  --allow-test
+```
+
+The default sweep compares `random` and `raster` navigators. Confidence
+conditions use thresholds `0.5 0.9`, require 32 unique evidence patches, and
+allow 500 total actions including the final diagnosis. Fixed conditions stop
+after fixed navigation-step counts `1 4 8 16 32 64 128 256 500`, followed by
+one additional diagnosis action. A budget counts every navigation action,
+including zooms and revisits; unique evidence count remains a separately
+reported outcome. Override these values with `--navigators`, `--thresholds`,
+`--confidence-min-evidence`, `--confidence-max-total-actions`, and
+`--step-budgets`. `--random-seed` defaults to `rl.seed`, and `--output`
+selects a non-default report path.
+
+The sweep constructs evaluation environments with diagnosis available from
+the start and enough capacity for the largest fixed-step prefix plus its
+diagnosis action (501 actions under the defaults). Those are evaluator-local
+overrides: the saved configuration, preprocessing and belief fingerprints,
+trained PPO environments, and checkpoints are unchanged.
+The default atomic report is
+`workspace/models/belief/<belief-fingerprint>/evaluation_<split>_navigation_baseline_sweep.json`.
+
 The preprocessing and training pipeline stages materialize only the persisted
 train and validation partitions and do not open guarded test HDF5 payloads or
 WSI pixels. Planning may stat source inventory paths, sizes, and modification
@@ -99,12 +128,41 @@ Both the default-on final operation and the explicit
 `eval-rl --split test --allow-test` command first require complete
 train/validation preprocessing. They then add only explicitly authorized test
 entries to the sparse deterministic cell-ID table and record the operation in
-a separate `test_evaluation_preprocessing.json` manifest with
+an immutable manifest beneath
+`test_evaluations/<evaluation-fingerprint>/manifest.json`, with
 `training_dependency: false`. Neither those artifacts nor any test metric can
 affect PPO weights, validation checkpoint selection, stage fingerprints, or
 resume compatibility. Each slide receives a fixed non-overlapping int64 block
 from its deterministic adapter index, so arbitrary bounded subsets never need
 to inspect unrequested embeddings.
+
+Run `wsi-lab prepare-test --config CONFIG --allow-test` once before a cluster
+evaluator array. Array jobs should use `--test-artifacts require`, which only
+accepts the exact completed manifest and performs no preprocessing writes. The
+default `--test-artifacts auto` is intended for individual evaluators: it
+reuses a compatible warm cache and otherwise coordinates one builder with a
+fingerprint-scoped interprocess lock. Test evaluation uses the separate
+immutable slide index as an authority: each slide generation is checked lazily
+when evaluation first loads it. A stale or replaced generation therefore fails
+closed without adding an up-front 129-slide preprocessing pass. The evaluator
+never rewrites the development `slides.json` on a cache hit. Cold preparation
+may add deterministic test rows to the shared
+`cell_offsets.json` table and create test-only slide directories, but it does
+not alter existing development slide artifacts or make them training inputs.
+Automatic cross-process preparation assumes the processed workspace provides
+POSIX `flock` semantics across cluster nodes; the scheduler dependency plus
+read-only `require` mode is the preferred cluster workflow. Do not run a writer
+that rebuilds the same fingerprinted slide directory concurrently with the
+dependent evaluator array.
+
+`require` still recomputes the current stage fingerprints using read-only file
+metadata so source-inventory changes fail closed. It does not preprocess test
+slides or open their HDF5/WSI payloads during that check. This is a short
+metadata validation rather than the prior per-slide preparation workload.
+The extra offset, slide-build, index, and generated-mask coordination is enabled
+only for evaluator-driven cold preparation; normal development preprocessing
+retains its existing defaults, index publication, fingerprints, and training
+dependencies.
 
 The environment normalizes remaining budget by configured `max_episode_steps`;
 default 500. Its scalar observation is

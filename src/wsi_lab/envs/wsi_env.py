@@ -127,6 +127,7 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
         reward_type: str = "default",
         step_cost: float = 0.001,
         belief_reward_beta: float = 1.0,
+        lightweight_evaluation: bool = False,
         render_mode: str | None = None,
     ) -> None:
         super().__init__()
@@ -150,6 +151,7 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
         self.reward_type = str(getattr(reward_type, "value", reward_type))
         self.step_cost = step_cost
         self.belief_reward_beta = belief_reward_beta
+        self.lightweight_evaluation = bool(lightweight_evaluation)
         self.render_mode = render_mode
         self.action_space = gym.spaces.Discrete(NUM_ACTIONS)
         self.observation_space = make_observation_space(overview_size, viewport_size)
@@ -322,7 +324,11 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
         if not self._cell.tissue_valid:
             raise ValueError("Start cell must be tissue-valid")
         self._visits = np.zeros((self.overview_size, self.overview_size), dtype=np.uint32)
-        self._viewport = self._read_augmented_viewport(self._cell)
+        self._viewport = (
+            np.zeros((self.viewport_size, self.viewport_size, 3), dtype=np.uint8)
+            if self.lightweight_evaluation
+            else self._read_augmented_viewport(self._cell)
+        )
         self._evidence.clear()
         self._actions_taken = 0
         self._terminated = False
@@ -330,12 +336,15 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
         self._visited_cell_ids = {self._cell.cell_id}
         self._revisit_count = 0
         self._magnification_histogram = Counter({f"{self._cell.magnification:g}": 1})
-        self._trajectory = [self._trajectory_point(action=None)]
-        increment_visits(
-            self._visits,
-            self._canonical_observation_transform,
-            self._cell.bounds,
+        self._trajectory = (
+            [] if self.lightweight_evaluation else [self._trajectory_point(action=None)]
         )
+        if not self.lightweight_evaluation:
+            increment_visits(
+                self._visits,
+                self._canonical_observation_transform,
+                self._cell.bounds,
+            )
         info = self._info()
         info["reset_visit"] = True
         return self._observation(), info
@@ -422,7 +431,8 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
         if selected in DIAGNOSIS_ACTIONS:
             prediction = int(selected is Action.DIAGNOSE_CANCEROUS)
             self._terminated = True
-            self._trajectory.append(self._trajectory_point(action=int(selected)))
+            if not self.lightweight_evaluation:
+                self._trajectory.append(self._trajectory_point(action=int(selected)))
             reward = diagnosis_reward(prediction, self._slide.label, self.step_cost)
             info = self._info()
             info.update(
@@ -444,16 +454,19 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
             self._revisit_count += 1
         self._visited_cell_ids.add(self._cell.cell_id)
         self._magnification_histogram[f"{self._cell.magnification:g}"] += 1
-        self._viewport = self._read_augmented_viewport(self._cell)
+        if not self.lightweight_evaluation:
+            self._viewport = self._read_augmented_viewport(self._cell)
         assert self._observation_transform is not None
         assert self._canonical_observation_transform is not None
-        increment_visits(
-            self._visits,
-            self._canonical_observation_transform,
-            self._cell.bounds,
-        )
+        if not self.lightweight_evaluation:
+            increment_visits(
+                self._visits,
+                self._canonical_observation_transform,
+                self._cell.bounds,
+            )
         evidence_added = self._maybe_add_evidence()
-        self._trajectory.append(self._trajectory_point(action=int(selected)))
+        if not self.lightweight_evaluation:
+            self._trajectory.append(self._trajectory_point(action=int(selected)))
         belief_after = float(self.belief_state.probability)
         reward = navigation_reward(
             label=self._slide.label,
@@ -477,17 +490,9 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
 
     def _observation(self) -> dict[str, np.ndarray]:
         assert self._slide is not None and self._cell is not None
-        assert self._observation_transform is not None and self._spatial_overview is not None
+        assert self._observation_transform is not None
         assert self._canonical_observation_transform is not None
-        assert self._visits is not None and self._viewport is not None
-        overview = rgb_chw_float(self._spatial_overview)
         agent_bounds = self._agent_bounds(self._cell.bounds)
-        location = location_mask(self._canonical_observation_transform, self._cell.bounds)
-        visits = np.minimum(self._visits, self.max_visit_count).astype(np.float32)
-        if self.geometric_augmentation:
-            location = self._geometric_orientation.apply_image(location)
-            visits = self._geometric_orientation.apply_image(visits)
-        visits /= float(self.max_visit_count)
         magnification_index = NAVIGATION_MAGNIFICATIONS.index(self._cell.magnification)
         center_x = (agent_bounds[0] + agent_bounds[2]) / 2
         center_y = (agent_bounds[1] + agent_bounds[3]) / 2
@@ -505,12 +510,25 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
             ],
             dtype=np.float32,
         )
+        scalar_observation = np.clip(scalars, 0.0, 1.0)
+        if self.lightweight_evaluation:
+            return {"scalars": scalar_observation}
+
+        assert self._spatial_overview is not None
+        assert self._visits is not None and self._viewport is not None
+        overview = rgb_chw_float(self._spatial_overview)
+        location = location_mask(self._canonical_observation_transform, self._cell.bounds)
+        visits = np.minimum(self._visits, self.max_visit_count).astype(np.float32)
+        if self.geometric_augmentation:
+            location = self._geometric_orientation.apply_image(location)
+            visits = self._geometric_orientation.apply_image(visits)
+        visits /= float(self.max_visit_count)
         return {
             "global": np.concatenate((overview, location[None], visits[None]), axis=0).astype(
                 np.float32
             ),
             "viewport": rgb_chw_float(self._viewport),
-            "scalars": np.clip(scalars, 0.0, 1.0),
+            "scalars": scalar_observation,
         }
 
     def _info(self) -> dict[str, Any]:
@@ -591,6 +609,8 @@ class WSIEnv(gym.Env[dict[str, np.ndarray], int]):
         return tuple(dict(item) for item in self._trajectory)
 
     def render(self) -> np.ndarray:
+        if self.lightweight_evaluation:
+            raise RuntimeError("rendering is unavailable in lightweight evaluation mode")
         from wsi_lab.envs.rendering import render_state
 
         if (

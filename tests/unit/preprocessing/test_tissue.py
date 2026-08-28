@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -131,10 +134,14 @@ def test_generated_mask_is_atomically_cached_with_provenance(tmp_path: Path, mon
             self.calls = 0
             self.snapshot = "test-snapshot"
             self.checkpoint_sha256 = "a" * 64
+            self.started = threading.Event()
+            self.release = threading.Event()
 
         def run(self, slide_path, output_dir, *, mpp=None):
             del slide_path, mpp
             self.calls += 1
+            self.started.set()
+            assert self.release.wait(timeout=2)
             raw = Path(output_dir) / "slide_tissue.png"
             values = np.zeros((10, 20), dtype=np.uint8)
             values[:, :10] = 255
@@ -201,27 +208,36 @@ def test_generated_mask_is_atomically_cached_with_provenance(tmp_path: Path, mon
             "sha256": "b" * 64,
         },
     )
-    first = load_or_create_tissue_mask(
-        slide,
-        _overview(transform),
-        transform,
-        generated_path=generated,
-        source="atlaspatch",
-        atlaspatch_runner=runner,  # type: ignore[arg-type]
-        mpp=(0.25, 0.25),
-    )
-    second = load_or_create_tissue_mask(
-        slide,
-        _overview(transform),
-        transform,
-        generated_path=generated,
-        source="atlaspatch",
-        atlaspatch_runner=runner,  # type: ignore[arg-type]
-        mpp=(0.25, 0.25),
-    )
 
-    assert first.source == "atlaspatch"
-    assert second.source == "atlaspatch-cache"
+    def load_mask():
+        return load_or_create_tissue_mask(
+            slide,
+            _overview(transform),
+            transform,
+            generated_path=generated,
+            source="atlaspatch",
+            atlaspatch_runner=runner,  # type: ignore[arg-type]
+            mpp=(0.25, 0.25),
+            concurrent_writes=True,
+        )
+
+    second_started = threading.Event()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(load_mask)
+        assert runner.started.wait(timeout=2)
+
+        def load_second():
+            second_started.set()
+            return load_mask()
+
+        second_future = executor.submit(load_second)
+        assert second_started.wait(timeout=2)
+        time.sleep(0.05)
+        runner.release.set()
+        first = first_future.result(timeout=2)
+        second = second_future.result(timeout=2)
+
+    assert {first.source, second.source} == {"atlaspatch", "atlaspatch-cache"}
     assert np.array_equal(first.values, second.values)
     assert runner.calls == 1
     assert generated.is_file()

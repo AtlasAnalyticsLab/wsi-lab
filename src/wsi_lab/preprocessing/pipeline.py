@@ -5,6 +5,7 @@ from __future__ import annotations
 import bisect
 import math
 from collections.abc import Iterator, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field, replace
 from itertools import pairwise
 from pathlib import Path
@@ -22,7 +23,7 @@ from wsi_lab.data.embeddings.base import EmbeddingMetadata, EmbeddingProvider
 from wsi_lab.data.embeddings.hdf5 import HDF5EmbeddingProvider
 from wsi_lab.data.splits import DatasetSplit
 from wsi_lab.errors import ArtifactCompatibilityError, PreprocessingError, TestSplitAccessError
-from wsi_lab.preprocessing.artifacts import ArtifactStore, SlideOffset
+from wsi_lab.preprocessing.artifacts import ArtifactStore, SlideOffset, advisory_lock
 from wsi_lab.preprocessing.atlaspatch import (
     AtlasPatchOptions,
     ensure_mpp_override_csv,
@@ -49,6 +50,7 @@ class PreprocessingOptions:
     strict_mapping: bool = True
     atlaspatch: AtlasPatchOptions = field(default_factory=AtlasPatchOptions)
     tissue_cache_root: Path | None = None
+    concurrent_writes: bool = False
 
     def __post_init__(self) -> None:
         if self.overview_size < 1:
@@ -67,6 +69,7 @@ class PreprocessingOptions:
         *,
         tissue_cache_root: str | Path | None = None,
         mpp_csv: str | Path | None = None,
+        concurrent_writes: bool = False,
     ) -> PreprocessingOptions:
         tissue = config.tissue
         workspace = config.workspace
@@ -84,6 +87,7 @@ class PreprocessingOptions:
             tissue_rebuild=bool(tissue.rebuild),
             atlaspatch=AtlasPatchOptions.from_config(tissue.atlaspatch, mpp_csv=mpp_csv),
             tissue_cache_root=configured_root,
+            concurrent_writes=concurrent_writes,
         )
 
 
@@ -149,61 +153,73 @@ class Preprocessor:
             }
         )
         self._offset_fingerprint = offset_fingerprint
-        if self._offsets is None:
-            try:
+
+        def validate(offsets: Mapping[str, SlideOffset]) -> None:
+            for slide_id, item in offsets.items():
+                try:
+                    expected_index = positions[slide_id]
+                except KeyError as exc:
+                    raise ArtifactCompatibilityError(
+                        f"persisted cell offsets contain unknown slide {slide_id}"
+                    ) from exc
+                expected_offset = expected_index * CELL_ID_SLIDE_BLOCK_SIZE
+                if item.slide_index != expected_index or item.offset != expected_offset:
+                    raise ArtifactCompatibilityError(
+                        f"persisted cell block disagrees with adapter index for {slide_id}"
+                    )
+
+        # The in-memory table is safe as a fast path only when it already has
+        # every requested deterministic block. Missing blocks require a locked
+        # disk reload so a stale process cannot erase another writer's additions.
+        if self._offsets is not None and set(requested).issubset(self._offsets):
+            validate(self._offsets)
+            return self._offsets
+
+        offset_lock = (
+            advisory_lock(self.artifacts.offsets_lock_path)
+            if self.options.concurrent_writes
+            else nullcontext()
+        )
+        with offset_lock:
+            if self.artifacts.offsets_path.is_file():
                 offsets = self.artifacts.load_offsets(expected_input_fingerprint=offset_fingerprint)
-            except ArtifactCompatibilityError:
+            else:
                 offsets = {}
-        else:
-            offsets = dict(self._offsets)
-
-        for slide_id, item in offsets.items():
-            try:
-                expected_index = positions[slide_id]
-            except KeyError as exc:
-                raise ArtifactCompatibilityError(
-                    f"persisted cell offsets contain unknown slide {slide_id}"
-                ) from exc
-            expected_offset = expected_index * CELL_ID_SLIDE_BLOCK_SIZE
-            if item.slide_index != expected_index or item.offset != expected_offset:
-                raise ArtifactCompatibilityError(
-                    f"persisted cell block disagrees with adapter index for {slide_id}"
-                )
-        if not requested or set(requested).issubset(offsets):
-            self._offsets = offsets
-            return offsets
-
-        for slide_id in requested:
-            if slide_id in offsets:
-                continue
-            slide_index = positions[slide_id]
-            record = records[slide_index]
-            metadata = self.embeddings.metadata(record.slide_id, self.adapter.magnifications[0])
-            count = sum(
-                math.ceil(metadata.level0_height / LEVEL0_FOOTPRINTS[magnification])
-                * math.ceil(metadata.level0_width / LEVEL0_FOOTPRINTS[magnification])
-                for magnification in NAVIGATION_MAGNIFICATIONS
-            )
-            if count >= CELL_ID_SLIDE_BLOCK_SIZE:
-                raise PreprocessingError(
-                    f"{record.slide_id} requires {count} cells, exceeding its fixed "
-                    f"cell-ID block capacity {CELL_ID_SLIDE_BLOCK_SIZE - 1}"
-                )
-            offset = slide_index * CELL_ID_SLIDE_BLOCK_SIZE
-            if offset > np.iinfo(np.int64).max - (count - 1):
-                raise PreprocessingError(
-                    f"dataset-global cell-ID block for {record.slide_id} exceeds int64"
-                )
-            offsets[record.slide_id] = SlideOffset(
-                slide_id=record.slide_id,
-                slide_index=slide_index,
-                offset=offset,
-                num_cells=count,
-                level0_width=metadata.level0_width,
-                level0_height=metadata.level0_height,
-            )
-        self.artifacts.write_offsets(offsets, input_fingerprint=offset_fingerprint)
-        self._offsets = dict(sorted(offsets.items(), key=lambda item: item[1].slide_index))
+            validate(offsets)
+            if requested and not set(requested).issubset(offsets):
+                for slide_id in requested:
+                    if slide_id in offsets:
+                        continue
+                    slide_index = positions[slide_id]
+                    record = records[slide_index]
+                    metadata = self.embeddings.metadata(
+                        record.slide_id, self.adapter.magnifications[0]
+                    )
+                    count = sum(
+                        math.ceil(metadata.level0_height / LEVEL0_FOOTPRINTS[magnification])
+                        * math.ceil(metadata.level0_width / LEVEL0_FOOTPRINTS[magnification])
+                        for magnification in NAVIGATION_MAGNIFICATIONS
+                    )
+                    if count >= CELL_ID_SLIDE_BLOCK_SIZE:
+                        raise PreprocessingError(
+                            f"{record.slide_id} requires {count} cells, exceeding its fixed "
+                            f"cell-ID block capacity {CELL_ID_SLIDE_BLOCK_SIZE - 1}"
+                        )
+                    offset = slide_index * CELL_ID_SLIDE_BLOCK_SIZE
+                    if offset > np.iinfo(np.int64).max - (count - 1):
+                        raise PreprocessingError(
+                            f"dataset-global cell-ID block for {record.slide_id} exceeds int64"
+                        )
+                    offsets[record.slide_id] = SlideOffset(
+                        slide_id=record.slide_id,
+                        slide_index=slide_index,
+                        offset=offset,
+                        num_cells=count,
+                        level0_width=metadata.level0_width,
+                        level0_height=metadata.level0_height,
+                    )
+                self.artifacts.write_offsets(offsets, input_fingerprint=offset_fingerprint)
+            self._offsets = dict(sorted(offsets.items(), key=lambda item: item[1].slide_index))
         return self._offsets
 
     def _embedding_metadata(self, slide_id: str) -> dict[float, EmbeddingMetadata]:
@@ -392,6 +408,7 @@ class Preprocessor:
             rebuild=self.options.tissue_rebuild,
             atlaspatch_options=atlaspatch_options,
             mpp=mpp,
+            concurrent_writes=self.options.concurrent_writes,
         )
         result = (overview, transform, tissue)
         self._prepared_tissue[slide_id] = result
@@ -411,6 +428,36 @@ class Preprocessor:
         ) = self._inspect_slide_context(slide_id, require_global_offset=False)
         _, _, tissue = self._materialize_tissue(slide_id, record, atlaspatch_options, mpp)
         return tissue
+
+    def _reuse_slide_result(
+        self,
+        slide_id: str,
+        input_fingerprint: str,
+        *,
+        overwrite: bool,
+    ) -> SlidePreprocessingResult | None:
+        if overwrite or self.options.tissue_rebuild:
+            return None
+        try:
+            stored = self.artifacts.load_metadata(
+                slide_id, expected_input_fingerprint=input_fingerprint
+            )
+        except ArtifactCompatibilityError:
+            return None
+        reused_summaries = {
+            float(key): MappingSummary(**value)
+            for key, value in stored["mapping_summaries"].items()
+        }
+        return SlidePreprocessingResult(
+            slide_id=slide_id,
+            artifact_path=self.artifacts.slide_paths(slide_id).root,
+            input_fingerprint=input_fingerprint,
+            reused=True,
+            cell_id_offset=int(stored["cell_id_offset"]),
+            num_cells=int(stored["num_cells"]),
+            start_cell_id=int(stored["start_cell_id"]),
+            mapping_summaries=reused_summaries,
+        )
 
     def preprocess_slide(
         self, slide_id: str, *, overwrite: bool = False
@@ -436,103 +483,98 @@ class Preprocessor:
             atlaspatch_options,
             record.tissue_mask_path,
         )
-        if (
-            not overwrite
-            and not self.options.tissue_rebuild
-            and self.artifacts.is_slide_complete(
-                slide_id, expected_input_fingerprint=input_fingerprint
+        reused = self._reuse_slide_result(slide_id, input_fingerprint, overwrite=overwrite)
+        if reused is not None:
+            return reused
+
+        # Lock before tissue generation and topology/mapping materialization.
+        # A waiter rechecks completion after acquiring the lock, so only the
+        # winning process performs the expensive work.
+        slide_lock = (
+            self.artifacts.slide_build_lock(slide_id)
+            if self.options.concurrent_writes
+            else nullcontext()
+        )
+        with slide_lock:
+            reused = self._reuse_slide_result(slide_id, input_fingerprint, overwrite=overwrite)
+            if reused is not None:
+                return reused
+
+            overview, transform, tissue = self._materialize_tissue(
+                slide_id, record, atlaspatch_options, mpp
             )
-        ):
-            stored = self.artifacts.load_metadata(
-                slide_id, expected_input_fingerprint=input_fingerprint
+            geometry = self.geometry_builder.build(
+                slide_id,
+                level0_width=wsi.dimensions[0],
+                level0_height=wsi.dimensions[1],
+                level0_magnification=level0_magnification,
+                cell_id_offset=offset.offset,
+                slide_index=offset.slide_index,
             )
-            reused_summaries = {
-                float(key): MappingSummary(**value)
-                for key, value in stored["mapping_summaries"].items()
-            }
+            geometry = apply_tissue_to_geometry(geometry, tissue, transform)
+            levels = dict(geometry.levels)
+            summaries: dict[float, MappingSummary] = {}
+            embedding_sources: dict[float, dict[str, Any]] = {}
+            for magnification in self.adapter.magnifications:
+                level = levels[float(magnification)]
+                coordinates = self.embeddings.coordinates(slide_id, magnification)
+                mapping = map_embeddings_to_grid(
+                    level,
+                    coordinates,
+                    tolerance=self.options.mapping_tolerance,
+                    level0_width=geometry.level0_width,
+                    level0_height=geometry.level0_height,
+                    strict=self.options.strict_mapping,
+                )
+                attached = mapping.attach(level)
+                embedded = attached["embedding_index"] >= 0
+                tissue_overlapping = embedded & (attached["tissue_fraction"] > 0.0)
+                mapped_cells = int(np.count_nonzero(embedded))
+                overlap_count = int(np.count_nonzero(tissue_overlapping))
+                levels[float(magnification)] = replace(level, cells=attached)
+                summaries[float(magnification)] = replace(
+                    mapping.summary,
+                    tissue_overlapping_cells=overlap_count,
+                    tissue_overlap_fraction=(
+                        overlap_count / mapped_cells if mapped_cells else None
+                    ),
+                )
+                item = embedding_metadata[float(magnification)]
+                embedding_sources[float(magnification)] = {
+                    "path": str(item.path),
+                    "file": file_fingerprint(item.path),
+                    "feature_key": item.feature_key,
+                    "coordinate_key": item.coordinate_key,
+                    "num_instances": item.num_instances,
+                    "feature_dim": item.feature_dim,
+                    "source_row_semantics": "embedding_index is the original HDF5 dataset row",
+                }
+            geometry = replace(geometry, levels=levels)
+            start_cell_id = choose_start_cell(geometry)
+            self.artifacts.write_slide(
+                geometry=geometry,
+                overview=overview,
+                transform=transform,
+                tissue_mask=tissue,
+                start_cell_id=start_cell_id,
+                label=record.label,
+                slide_path=record.slide_path,
+                input_fingerprint=input_fingerprint,
+                embedding_sources=embedding_sources,
+                mapping_summaries=summaries,
+                overwrite=True,
+                lock_held=self.options.concurrent_writes,
+            )
             return SlidePreprocessingResult(
                 slide_id=slide_id,
                 artifact_path=self.artifacts.slide_paths(slide_id).root,
                 input_fingerprint=input_fingerprint,
-                reused=True,
-                cell_id_offset=int(stored["cell_id_offset"]),
-                num_cells=int(stored["num_cells"]),
-                start_cell_id=int(stored["start_cell_id"]),
-                mapping_summaries=reused_summaries,
+                reused=False,
+                cell_id_offset=offset.offset,
+                num_cells=geometry.num_cells,
+                start_cell_id=start_cell_id,
+                mapping_summaries=summaries,
             )
-
-        overview, transform, tissue = self._materialize_tissue(
-            slide_id, record, atlaspatch_options, mpp
-        )
-        geometry = self.geometry_builder.build(
-            slide_id,
-            level0_width=wsi.dimensions[0],
-            level0_height=wsi.dimensions[1],
-            level0_magnification=level0_magnification,
-            cell_id_offset=offset.offset,
-            slide_index=offset.slide_index,
-        )
-        geometry = apply_tissue_to_geometry(geometry, tissue, transform)
-        levels = dict(geometry.levels)
-        summaries: dict[float, MappingSummary] = {}
-        embedding_sources: dict[float, dict[str, Any]] = {}
-        for magnification in self.adapter.magnifications:
-            level = levels[float(magnification)]
-            coordinates = self.embeddings.coordinates(slide_id, magnification)
-            mapping = map_embeddings_to_grid(
-                level,
-                coordinates,
-                tolerance=self.options.mapping_tolerance,
-                level0_width=geometry.level0_width,
-                level0_height=geometry.level0_height,
-                strict=self.options.strict_mapping,
-            )
-            attached = mapping.attach(level)
-            embedded = attached["embedding_index"] >= 0
-            tissue_overlapping = embedded & (attached["tissue_fraction"] > 0.0)
-            mapped_cells = int(np.count_nonzero(embedded))
-            overlap_count = int(np.count_nonzero(tissue_overlapping))
-            levels[float(magnification)] = replace(level, cells=attached)
-            summaries[float(magnification)] = replace(
-                mapping.summary,
-                tissue_overlapping_cells=overlap_count,
-                tissue_overlap_fraction=(overlap_count / mapped_cells if mapped_cells else None),
-            )
-            item = embedding_metadata[float(magnification)]
-            embedding_sources[float(magnification)] = {
-                "path": str(item.path),
-                "file": file_fingerprint(item.path),
-                "feature_key": item.feature_key,
-                "coordinate_key": item.coordinate_key,
-                "num_instances": item.num_instances,
-                "feature_dim": item.feature_dim,
-                "source_row_semantics": "embedding_index is the original HDF5 dataset row",
-            }
-        geometry = replace(geometry, levels=levels)
-        start_cell_id = choose_start_cell(geometry)
-        self.artifacts.write_slide(
-            geometry=geometry,
-            overview=overview,
-            transform=transform,
-            tissue_mask=tissue,
-            start_cell_id=start_cell_id,
-            label=record.label,
-            slide_path=record.slide_path,
-            input_fingerprint=input_fingerprint,
-            embedding_sources=embedding_sources,
-            mapping_summaries=summaries,
-            overwrite=True,
-        )
-        return SlidePreprocessingResult(
-            slide_id=slide_id,
-            artifact_path=self.artifacts.slide_paths(slide_id).root,
-            input_fingerprint=input_fingerprint,
-            reused=False,
-            cell_id_offset=offset.offset,
-            num_cells=geometry.num_cells,
-            start_cell_id=start_cell_id,
-            mapping_summaries=summaries,
-        )
 
     def preprocess(
         self,
@@ -540,6 +582,7 @@ class Preprocessor:
         *,
         overwrite: bool = False,
         merge_index: bool = False,
+        write_index: bool = True,
     ) -> tuple[SlidePreprocessingResult, ...]:
         selected = tuple(slide_ids) if slide_ids is not None else self.adapter.slide_ids()
         unknown = set(selected).difference(self.adapter.slide_ids())
@@ -549,7 +592,12 @@ class Preprocessor:
         results = tuple(
             self.preprocess_slide(slide_id, overwrite=overwrite) for slide_id in selected
         )
-        self.artifacts.write_index(selected, merge=merge_index)
+        if write_index:
+            self.artifacts.write_index(
+                selected,
+                merge=merge_index,
+                coordinate_writes=self.options.concurrent_writes,
+            )
         return results
 
 
@@ -630,6 +678,7 @@ class ProcessedEpisodeSource:
         split: DatasetSplit,
         *,
         allow_test: bool = False,
+        artifact_expectations: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> None:
         if split.dataset != adapter.name:
             raise ValueError(f"split dataset {split.dataset!r} != adapter {adapter.name!r}")
@@ -639,6 +688,24 @@ class ProcessedEpisodeSource:
         self.artifacts = artifacts
         self.split = split
         self.allow_test = allow_test
+        self._artifact_expectations = (
+            None
+            if artifact_expectations is None
+            else {
+                str(slide_id): dict(expectation)
+                for slide_id, expectation in artifact_expectations.items()
+            }
+        )
+        if self._artifact_expectations is not None:
+            test_ids = set(split.ids("test"))
+            indexed_ids = set(self._artifact_expectations)
+            if indexed_ids != test_ids:
+                missing = sorted(test_ids.difference(indexed_ids))
+                unexpected = sorted(indexed_ids.difference(test_ids))
+                raise ArtifactCompatibilityError(
+                    "test-artifact index does not match the persisted test split; "
+                    f"missing={missing[:8]}, unexpected={unexpected[:8]}"
+                )
         self._loaded_cells: dict[str, NavigationCellMapping] = {}
 
     @classmethod
@@ -649,6 +716,7 @@ class ProcessedEpisodeSource:
         split: DatasetSplit,
         *,
         allow_test: bool = False,
+        artifact_expectations: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> ProcessedEpisodeSource:
         from wsi_lab.data.factory import create_dataset_adapter
 
@@ -666,7 +734,52 @@ class ProcessedEpisodeSource:
             artifacts,
             split,
             allow_test=allow_test,
+            artifact_expectations=artifact_expectations,
         )
+
+    def _validate_artifact_expectation(
+        self,
+        slide_id: str,
+        metadata: Mapping[str, Any],
+    ) -> None:
+        if self._artifact_expectations is None:
+            return
+        try:
+            expected = self._artifact_expectations[slide_id]
+        except KeyError as exc:
+            raise ArtifactCompatibilityError(
+                f"test slide {slide_id!r} is absent from the authorized artifact index"
+            ) from exc
+        try:
+            comparable = {
+                "slide_id": str(metadata.get("slide_id", "")),
+                "slide_index": int(metadata["slide_index"]),
+                "input_fingerprint": str(metadata["input_fingerprint"]),
+                "cell_id_offset": int(metadata["cell_id_offset"]),
+                "num_cells": int(metadata["num_cells"]),
+            }
+            expected_comparable = {
+                "slide_id": str(expected["slide_id"]),
+                "slide_index": int(expected["slide_index"]),
+                "input_fingerprint": str(expected["input_fingerprint"]),
+                "cell_id_offset": int(expected["cell_id_offset"]),
+                "num_cells": int(expected["num_cells"]),
+            }
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ArtifactCompatibilityError(
+                f"invalid immutable artifact-index entry for test slide {slide_id!r}: {exc}"
+            ) from exc
+        mismatched = [key for key, value in expected_comparable.items() if comparable[key] != value]
+        expected_metadata_fingerprint = expected.get("metadata_fingerprint")
+        if expected_metadata_fingerprint is not None and fingerprint(dict(metadata)) != str(
+            expected_metadata_fingerprint
+        ):
+            mismatched.append("metadata_fingerprint")
+        if mismatched:
+            raise ArtifactCompatibilityError(
+                f"processed test slide {slide_id!r} disagrees with its immutable index "
+                f"({', '.join(mismatched)})"
+            )
 
     def slide_ids(self, split: str) -> Sequence[str]:
         if split not in {"train", "val", "test"}:
@@ -682,6 +795,8 @@ class ProcessedEpisodeSource:
         if assignment.split == "test" and not self.allow_test:
             raise TestSplitAccessError("test split access requires allow_test=True")
         metadata = self.artifacts.load_metadata(slide_id)
+        if assignment.split == "test":
+            self._validate_artifact_expectation(slide_id, metadata)
         persisted = OverviewTransform.from_dict(metadata["overview_transform"])
         if slide_id not in self._loaded_cells:
             arrays = tuple(
