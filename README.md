@@ -18,6 +18,15 @@ conda env create --file environment.yml
 conda activate wsi-lab
 ```
 
+W&B tracking is optional and is not installed by the default environment. To
+enable it, install the extra and authenticate before setting `logging.wandb`
+to `true`:
+
+```bash
+python -m pip install -e '.[wandb]'
+wandb login
+```
+
 See [the installation guide](docs/INSTALLATION.md) for verification, CPU setup, AtlasPatch/SAM2 requirements, and troubleshooting.
 
 ## Configure
@@ -224,6 +233,26 @@ View every run while it is training with:
 ```bash
 tensorboard --logdir workspace/runs/rl
 ```
+
+W&B can record the same belief, PPO, validation, and automatic final-test
+scalars without uploading models or datasets. It remains disabled by default:
+
+```yaml
+logging:
+  tensorboard: true
+  wandb: true
+  wandb_project: wsi-lab
+  wandb_entity: null
+  wandb_mode: online
+  wandb_tags: [camelyon16]
+```
+
+Set `wandb_mode: offline` on disconnected compute nodes, preserve the generated
+`wandb/` directory inside the model/run artifact directory, and upload it later
+with `wandb sync PATH`. Belief training, PPO training, and automatic final-test
+reporting use separate W&B runs; the PPO pair shares a fingerprint-based group.
+Enabling W&B does not change artifact fingerprints or retroactively publish a
+stage that the idempotent pipeline skips.
 
 Use [manual play](docs/MANUAL_PLAY.md) to control the production environment
 with the keyboard while viewing the exact actor observations, scalar values,

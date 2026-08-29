@@ -10,7 +10,14 @@ conda env create --file environment.yml
 conda activate wsi-lab
 ```
 
-`environment.yml` installs Python 3.11, native OpenSlide 4.x, PyTorch with CUDA 12.1, torchvision, AtlasPatch 1.1.0, SAM2 at commit `2b90b9f5ceec907a1c18123530e92e794ad901a4`, TIFF support including `imagecodecs` for CAMELYON16's LZW masks, this package in editable mode, development tools, TensorBoard, and optional W&B support.
+`environment.yml` installs Python 3.11, native OpenSlide 4.x, PyTorch with CUDA 12.1, torchvision, AtlasPatch 1.1.0, SAM2 at commit `2b90b9f5ceec907a1c18123530e92e794ad901a4`, TIFF support including `imagecodecs` for CAMELYON16's LZW masks, this package in editable mode, development tools, and TensorBoard. W&B is deliberately excluded from the default environment; install the optional extra only when experiment tracking is required:
+
+```bash
+python -m pip install -e '.[wandb]'
+wandb login
+```
+
+Authentication may instead be supplied through `WANDB_API_KEY`. Offline runs do not require login and can be uploaded later with `wandb sync PATH`.
 
 ### Verify environment isolation and installed components
 

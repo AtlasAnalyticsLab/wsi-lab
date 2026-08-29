@@ -929,6 +929,71 @@ def test_automatic_final_test_evaluation_logs_numeric_test_metrics(
     assert captured["closed"] is True
 
 
+def test_automatic_final_test_evaluation_routes_metrics_to_shared_tracking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    config.logging.tensorboard = False
+    run_dir = tmp_path / "run"
+    fingerprint = "ppo-fingerprint"
+    captured: dict[str, Any] = {"events": []}
+
+    class Tracking:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            captured["closed"] = True
+
+        def add_scalars(self, metrics, step) -> None:
+            captured["events"].append((metrics, step))
+
+    def create_tracking(config_arg, directory, spec):
+        captured.update(config=config_arg, directory=directory, spec=spec)
+        return Tracking()
+
+    monkeypatch.setattr(cli, "stage_fingerprints", lambda _: {Stage.PPO: fingerprint})
+    monkeypatch.setattr(
+        cli,
+        "artifact_paths",
+        lambda *_: {Stage.PPO: run_dir / "manifest.json"},
+    )
+    monkeypatch.setattr(cli, "create_tracking", create_tracking)
+    monkeypatch.setattr(
+        cli,
+        "_evaluate_rl_command",
+        lambda *_args, **_kwargs: {
+            "evaluations": {
+                "best_validation": {
+                    "status": "complete",
+                    "checkpoint_global_step": 1234,
+                    "metrics": {"accuracy": 0.75, "has_both_classes": True},
+                    "ppo_patches_belief_metrics": {"accuracy": 0.8},
+                },
+                "latest": {"status": "unavailable"},
+            }
+        },
+    )
+
+    cli._automatic_final_test_evaluation(config)
+
+    assert captured["config"] is config
+    assert captured["directory"] == run_dir
+    assert captured["spec"].job_type == "final-test"
+    assert captured["spec"].fingerprint == fingerprint
+    assert captured["spec"].group == f"ppo-{fingerprint}"
+    assert captured["events"] == [
+        (
+            {
+                "test/best_validation/accuracy": 0.75,
+                "test/best_validation/ppo_patches_belief/accuracy": 0.8,
+            },
+            1234,
+        )
+    ]
+    assert captured["closed"] is True
+
+
 def test_ppo_test_evaluation_reports_best_and_latest_in_one_document(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

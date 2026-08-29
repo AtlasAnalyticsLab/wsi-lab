@@ -25,6 +25,10 @@ class TrainingError(WSILabError):
     """Model training cannot safely continue."""
 
 
+class TrackingError(WSILabError):
+    """Requested experiment tracking could not be initialized or updated."""
+
+
 class TestSplitAccessError(WSILabError):
     """A guarded labeled test split was requested without explicit consent."""
 

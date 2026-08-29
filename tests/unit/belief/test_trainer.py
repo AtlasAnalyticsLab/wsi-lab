@@ -64,7 +64,14 @@ def test_one_synthetic_optimizer_step_finalizes_atomic_artifact(tmp_path) -> Non
         "split": "synthetic-split",
         "preprocessing": "synthetic-preprocessing",
     }
-    trainer = BeliefTrainer(model, config, tmp_path / "belief", dependencies=dependencies)
+    events = []
+    trainer = BeliefTrainer(
+        model,
+        config,
+        tmp_path / "belief",
+        dependencies=dependencies,
+        metric_callback=lambda event, payload: events.append((event, dict(payload))),
+    )
     result = trainer.fit(loaders.train, loaders.validation)
     assert result.global_step == 1
     assert result.checkpoint_path.exists()
@@ -79,6 +86,8 @@ def test_one_synthetic_optimizer_step_finalizes_atomic_artifact(tmp_path) -> Non
     assert loaded.embedding_dim == 3
     assert temperature == result.temperature
     assert "validation" in checkpoint
+    assert [event for event, _payload in events] == ["belief/epoch", "belief/complete"]
+    assert events[-1][1]["global_step"] == result.global_step
 
 
 def test_loaders_reject_test_or_wrong_partition_records() -> None:

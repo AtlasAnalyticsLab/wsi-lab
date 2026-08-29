@@ -232,6 +232,9 @@ class LoggingConfig(ConfigModel):
     tensorboard: StrictBool = True
     wandb: StrictBool = False
     wandb_project: str = "wsi-lab"
+    wandb_entity: str | None = None
+    wandb_mode: Literal["online", "offline"] = "online"
+    wandb_tags: tuple[str, ...] = ()
 
 
 class AppConfig(ConfigModel):

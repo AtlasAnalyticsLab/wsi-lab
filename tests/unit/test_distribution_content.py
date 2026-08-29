@@ -32,6 +32,15 @@ USER_ASSETS = (
 )
 
 
+def test_wandb_is_an_explicit_optional_extra() -> None:
+    pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    environment = (PROJECT_ROOT / "environment.yml").read_text(encoding="utf-8")
+
+    assert 'wandb = ["wandb>=0.19"]' in pyproject
+    assert "-e .[dev]" in environment
+    assert "-e .[dev,wandb]" not in environment
+
+
 def _copy_build_input(destination: Path) -> None:
     destination.mkdir()
     for relative in PROJECT_FILES:

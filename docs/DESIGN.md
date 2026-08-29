@@ -113,7 +113,7 @@ At each crossed `rl.validation_interval`, the current policy deterministically
 examines every validation slide once. The pass is excluded from the training
 global-step counter and gradient updates. Its full aggregate/per-slide result
 is stored in `validation_<global-step>.json`, while numeric aggregates use
-`validation/*` TensorBoard tags.
+`validation/*` tags in every enabled scalar-tracking backend.
 
 Validation is also the sole model-selection boundary. A finite AUROC is the
 primary objective; accuracy is used only when AUROC is unavailable. The first
@@ -138,10 +138,10 @@ checkpoint. A missing or invalid best checkpoint is marked unavailable and
 does not suppress the latest result. `--no-final-test-eval` disables the pass,
 and dry-run mode never performs it. The two-entry result is written to
 `evaluation_ppo_test.json`. Existing `metrics` and the
-`test/best_validation/*` and `test/latest/*` TensorBoard namespaces continue to
+`test/best_validation/*` and `test/latest/*` scalar namespaces continue to
 describe the PPO diagnosis head and shared trajectory. Every completed entry
 also reports `ppo_patches_belief_metrics`, obtained by thresholding the
-calibrated terminal belief on PPO-selected patches at `0.5`; its TensorBoard
+calibrated terminal belief on PPO-selected patches at `0.5`; its tracking
 metrics are nested under `test/<selection>/ppo_patches_belief/*`. Each entry
 identifies the resolved checkpoint, its training step, dependencies, and
 embedded validation record.

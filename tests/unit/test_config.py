@@ -57,6 +57,51 @@ def test_config_defaults_to_32_diagnostic_embeddings(tmp_path: Path) -> None:
     assert config.environment.min_diagnostic_evidence == 32
 
 
+def test_config_defaults_to_disabled_online_wandb(tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text("dataset:\n  root: /tmp/data\n")
+
+    config = load_config(path)
+
+    assert config.logging.wandb is False
+    assert config.logging.wandb_project == "wsi-lab"
+    assert config.logging.wandb_entity is None
+    assert config.logging.wandb_mode == "online"
+    assert config.logging.wandb_tags == ()
+
+
+def test_config_accepts_offline_wandb_metadata(tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "dataset:\n"
+        "  root: /tmp/data\n"
+        "logging:\n"
+        "  wandb: true\n"
+        "  wandb_project: pathology\n"
+        "  wandb_entity: research-team\n"
+        "  wandb_mode: offline\n"
+        "  wandb_tags: [camelyon16, ablation]\n"
+    )
+
+    config = load_config(path)
+
+    assert config.logging.wandb is True
+    assert config.logging.wandb_project == "pathology"
+    assert config.logging.wandb_entity == "research-team"
+    assert config.logging.wandb_mode == "offline"
+    assert config.logging.wandb_tags == ("camelyon16", "ablation")
+
+
+def test_config_rejects_unknown_wandb_mode(tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "dataset:\n  root: /tmp/data\nlogging:\n  wandb_mode: shared\n"
+    )
+
+    with pytest.raises(ConfigurationError, match="wandb_mode"):
+        load_config(path)
+
+
 def test_config_defaults_to_disabled_augmentation(tmp_path: Path) -> None:
     path = tmp_path / "config.yaml"
     path.write_text("dataset:\n  root: /tmp/data\n")

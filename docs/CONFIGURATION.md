@@ -235,8 +235,37 @@ counter by `rl.num_envs * rl.rollout_steps`. `rl.validation_interval` and
 first completed rollout that crosses its threshold, rather than interrupting a
 rollout at the exact number.
 
-TensorBoard is controlled by `logging.tensorboard`. When enabled, the PPO run
-directory records:
+TensorBoard is controlled by `logging.tensorboard`. Optional W&B tracking uses
+the independent `logging.wandb` switch and the `wsi-lab[wandb]` package extra:
+
+```yaml
+logging:
+  tensorboard: true
+  wandb: false
+  wandb_project: wsi-lab
+  wandb_entity: null
+  wandb_mode: online
+  wandb_tags: []
+```
+
+`wandb_entity` selects an existing user or team and defaults to the account's
+configured entity. `wandb_mode` is `online` or `offline`; online mode requires
+`wandb login` or `WANDB_API_KEY`, while offline mode writes syncable data below
+the stage artifact directory. Tags are optional strings. Credentials are never
+read from YAML. W&B records the resolved configuration and the same belief,
+PPO, validation, and automatic final-test scalars as TensorBoard, but uploads
+no checkpoints, datasets, tables, images, or trajectories.
+
+Online belief and PPO runs have deterministic fingerprint-based IDs and resume
+an interrupted matching run. PPO training and automatic final-test reporting
+are separate jobs in one fingerprint-based W&B group. Offline invocations are
+separate locally syncable run segments because the W&B SDK does not resume
+offline processes. Logging settings are deliberately excluded from artifact
+fingerprints: enabling tracking does not retrain or retroactively publish a
+completed stage that the planner skips. Dry runs and disabled final-test
+evaluation create no tracking runs.
+
+When enabled, each scalar backend records:
 
 | Tags | Meaning |
 |---|---|

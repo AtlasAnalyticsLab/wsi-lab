@@ -27,6 +27,7 @@ from wsi_lab.data.splits import (
 from wsi_lab.errors import PreprocessingError, TestSplitAccessError, WSILabError
 from wsi_lab.pipeline import PipelineRunner, Stage, StageAction
 from wsi_lab.pipeline.planner import artifact_paths, stage_fingerprints
+from wsi_lab.tracking import TrackingRunSpec, create_tracking
 from wsi_lab.utils.atomic import atomic_json_dump, atomic_write_text
 from wsi_lab.utils.logging import configure_logging
 
@@ -514,19 +515,9 @@ def _belief_records(config: AppConfig, split_name: SplitName):
     return tuple(records), observed_dimensions.pop()
 
 
-def _numeric_metrics(prefix: str, value: Any):
-    if isinstance(value, Mapping):
-        for key, item in value.items():
-            yield from _numeric_metrics(f"{prefix}/{key}" if prefix else str(key), item)
-    elif isinstance(value, (int, float)) and not isinstance(value, bool):
-        yield prefix, float(value)
-
-
 def _belief_stage(
     config: AppConfig, artifact_dir: Path, fingerprint_value: str, action: StageAction
 ) -> dict[str, object]:
-    from torch.utils.tensorboard import SummaryWriter
-
     from wsi_lab.belief.model import GatedAttentionMIL
     from wsi_lab.belief.trainer import BeliefTrainer, build_belief_loaders
 
@@ -542,59 +533,42 @@ def _belief_stage(
         artifact_dir / "config.yaml",
         yaml.safe_dump(config.model_dump(mode="json"), sort_keys=True),
     )
-    loaders = build_belief_loaders(train_records, validation_records, config.belief)
-    tensorboard = (
-        SummaryWriter(log_dir=str(artifact_dir / "tensorboard"))
-        if config.logging.tensorboard
-        else None
-    )
-    wandb_run = None
-    if config.logging.wandb:
-        import wandb
-
-        wandb_run = wandb.init(
-            project=config.logging.wandb_project,
-            config=config.model_dump(mode="json"),
-            dir=str(artifact_dir),
-            resume="allow",
-        )
-
-    def record(event: str, payload: Mapping[str, Any]) -> None:
-        step = int(payload.get("global_step", payload.get("epoch", 0)))
-        metrics = dict(_numeric_metrics(event, payload))
-        if tensorboard is not None:
-            for name, value in metrics.items():
-                tensorboard.add_scalar(name, value, step)
-            tensorboard.flush()
-        if wandb_run is not None:
-            wandb_run.log(metrics, step=step)
-        LOGGER.info("%s %s", event, json.dumps(payload, default=str))
-
-    trainer = BeliefTrainer(
-        model,
-        config.belief,
-        artifact_dir,
-        dependencies={
-            "belief_stage": fingerprint_value,
-            "split": split.split_fingerprint,
-            "embedding_dimension": str(train_dimension),
-            "embedding_encoder": config.embeddings.encoder,
-        },
-        metric_callback=record,
-        manifest_name="training_state.json",
-    )
     started = time.monotonic()
     try:
-        result = trainer.fit(
-            loaders.train,
-            loaders.validation,
-            resume=action is StageAction.RESUME or config.belief.resume,
-        )
+        with create_tracking(
+            config,
+            artifact_dir,
+            TrackingRunSpec(job_type="train-belief", fingerprint=fingerprint_value),
+        ) as tracking:
+            loaders = build_belief_loaders(train_records, validation_records, config.belief)
+
+            def record(event: str, payload: Mapping[str, Any]) -> None:
+                step = int(
+                    payload.get("global_step", payload.get("step", payload.get("epoch", 0)))
+                )
+                tracking.log_mapping(event, payload, step)
+                tracking.flush()
+                LOGGER.info("%s %s", event, json.dumps(payload, default=str))
+
+            trainer = BeliefTrainer(
+                model,
+                config.belief,
+                artifact_dir,
+                dependencies={
+                    "belief_stage": fingerprint_value,
+                    "split": split.split_fingerprint,
+                    "embedding_dimension": str(train_dimension),
+                    "embedding_encoder": config.embeddings.encoder,
+                },
+                metric_callback=record,
+                manifest_name="training_state.json",
+            )
+            result = trainer.fit(
+                loaders.train,
+                loaders.validation,
+                resume=action is StageAction.RESUME or config.belief.resume,
+            )
     finally:
-        if tensorboard is not None:
-            tensorboard.close()
-        if wandb_run is not None:
-            wandb_run.finish()
         for record_item in (*train_records, *validation_records):
             for matrix in record_item.features_by_magnification.values():
                 close = getattr(matrix, "close", None)
@@ -631,106 +605,111 @@ def _ppo_dependencies(
 def _ppo_stage(
     config: AppConfig, artifact_dir: Path, fingerprint_value: str, action: StageAction
 ) -> dict[str, object]:
-    from torch.utils.tensorboard import SummaryWriter
-
     from wsi_lab.rl.best_checkpoint import BestValidationCheckpointTracker
     from wsi_lab.rl.evaluation import evaluate_policy
     from wsi_lab.rl.networks import RecurrentActorCritic
     from wsi_lab.rl.trainer import PPOTrainer, make_vector_env
 
-    factories = [
-        functools.partial(
-            _make_production_environment,
-            config,
-            split_name="train",
-            evaluation=False,
-            allow_test=False,
-        )
-        for _ in range(config.rl.num_envs)
-    ]
-    vector = make_vector_env(factories, backend=config.rl.vector_backend.value)
-    writer = (
-        SummaryWriter(log_dir=str(artifact_dir / "tensorboard"))
-        if config.logging.tensorboard
-        else None
-    )
-    model = RecurrentActorCritic()
-    dependencies = _ppo_dependencies(config)
-    checkpoint_dir = artifact_dir / "checkpoints"
-    best_tracker = BestValidationCheckpointTracker(
-        checkpoint_dir,
-        resume_existing=action is StageAction.RESUME,
-    )
-    trainer = PPOTrainer(
-        vector,
-        model,
-        config.rl,
-        writer=writer,
-        dependencies=dependencies,
-    )
-    atomic_write_text(
-        artifact_dir / "config.yaml",
-        yaml.safe_dump(config.model_dump(mode="json"), sort_keys=True),
-    )
-
-    def validate(current: PPOTrainer) -> None:
-        environment = _make_production_environment(
-            config,
-            split_name="val",
-            evaluation=True,
-            allow_test=False,
-        )
+    group = f"ppo-{fingerprint_value}"
+    with create_tracking(
+        config,
+        artifact_dir,
+        TrackingRunSpec(
+            job_type="train-rl",
+            fingerprint=fingerprint_value,
+            group=group,
+        ),
+    ) as tracking:
+        factories = [
+            functools.partial(
+                _make_production_environment,
+                config,
+                split_name="train",
+                evaluation=False,
+                allow_test=False,
+            )
+            for _ in range(config.rl.num_envs)
+        ]
+        vector = make_vector_env(factories, backend=config.rl.vector_backend.value)
+        trainer = None
         try:
-            evaluation = evaluate_policy(
-                current.model,
-                environment,
-                episodes=len(_load_verified_split(config).ids("val")),
-                device=current.device,
-                seed=config.rl.seed,
+            model = RecurrentActorCritic()
+            dependencies = _ppo_dependencies(config)
+            checkpoint_dir = artifact_dir / "checkpoints"
+            best_tracker = BestValidationCheckpointTracker(
+                checkpoint_dir,
+                resume_existing=action is StageAction.RESUME,
+            )
+            trainer = PPOTrainer(
+                vector,
+                model,
+                config.rl,
+                writer=tracking.writer,
+                dependencies=dependencies,
+            )
+            atomic_write_text(
+                artifact_dir / "config.yaml",
+                yaml.safe_dump(config.model_dump(mode="json"), sort_keys=True),
+            )
+
+            def validate(current: PPOTrainer) -> None:
+                environment = _make_production_environment(
+                    config,
+                    split_name="val",
+                    evaluation=True,
+                    allow_test=False,
+                )
+                try:
+                    evaluation = evaluate_policy(
+                        current.model,
+                        environment,
+                        episodes=len(_load_verified_split(config).ids("val")),
+                        device=current.device,
+                        seed=config.rl.seed,
+                    )
+                finally:
+                    environment.close()
+                decision = best_tracker.consider(
+                    evaluation.metrics,
+                    model=current.model,
+                    optimizer=current.optimizer,
+                    config=current.config,
+                    global_step=current.global_step,
+                    update=current.update_number,
+                    dependencies=current.dependencies,
+                )
+                validation_result = evaluation.to_dict()
+                validation_result["checkpoint_tracking"] = decision.to_dict()
+                atomic_json_dump(
+                    artifact_dir / f"validation_{current.global_step:012d}.json",
+                    validation_result,
+                )
+                validation_metrics = {
+                    f"validation/{name}": float(value)
+                    for name, value in evaluation.metrics.items()
+                    if isinstance(value, (int, float)) and not isinstance(value, bool)
+                }
+                validation_metrics.update(
+                    {
+                        "validation/is_best_checkpoint": float(decision.improved),
+                        "validation/best_selection_value": decision.best.metric_value,
+                    }
+                )
+                tracking.add_scalars(validation_metrics, current.global_step)
+
+            started = time.monotonic()
+            summary = trainer.train(
+                checkpoint_dir=checkpoint_dir,
+                resume_latest=action is StageAction.RESUME,
+                validation_callback=validate,
             )
         finally:
-            environment.close()
-        decision = best_tracker.consider(
-            evaluation.metrics,
-            model=current.model,
-            optimizer=current.optimizer,
-            config=current.config,
-            global_step=current.global_step,
-            update=current.update_number,
-            dependencies=current.dependencies,
-        )
-        validation_result = evaluation.to_dict()
-        validation_result["checkpoint_tracking"] = decision.to_dict()
-        atomic_json_dump(
-            artifact_dir / f"validation_{current.global_step:012d}.json",
-            validation_result,
-        )
-        if writer is not None:
-            for name, value in evaluation.metrics.items():
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    writer.add_scalar(f"validation/{name}", value, current.global_step)
-            writer.add_scalar(
-                "validation/is_best_checkpoint",
-                float(decision.improved),
-                current.global_step,
-            )
-            writer.add_scalar(
-                "validation/best_selection_value",
-                decision.best.metric_value,
-                current.global_step,
-            )
-
-    started = time.monotonic()
-    try:
-        summary = trainer.train(
-            checkpoint_dir=checkpoint_dir,
-            resume_latest=action is StageAction.RESUME,
-            validation_callback=validate,
-        )
-    finally:
-        trainer.close()
-        if writer is not None:
-            writer.close()
+            if trainer is not None:
+                trainer.close()
+            else:
+                close = getattr(vector, "close", None)
+                if callable(close):
+                    close()
     return {
         "input_fingerprint": fingerprint_value,
         "duration_seconds": time.monotonic() - started,
@@ -1413,41 +1392,47 @@ def _automatic_final_test_evaluation(config: AppConfig) -> dict[str, Any]:
     """Run the guarded best-versus-latest final test report."""
 
     fingerprints = stage_fingerprints(config)
+    ppo_fingerprint = fingerprints[Stage.PPO]
     run_dir = artifact_paths(config, fingerprints)[Stage.PPO].parent
-    result = _evaluate_rl_command(
+    with create_tracking(
         config,
-        "test",
-        allow_test=True,
-        run_directory=run_dir,
-    )
-    if config.logging.tensorboard:
-        from torch.utils.tensorboard import SummaryWriter
-
-        writer = SummaryWriter(log_dir=str(run_dir / "tensorboard"))
-        try:
-            evaluations = result.get("evaluations")
-            if isinstance(evaluations, Mapping):
-                for selection, evaluated in evaluations.items():
-                    if not isinstance(evaluated, Mapping) or evaluated.get("status") != "complete":
-                        continue
-                    global_step = int(evaluated.get("checkpoint_global_step") or 0)
-                    metrics = evaluated.get("metrics")
-                    if not isinstance(metrics, Mapping):
-                        continue
-                    for name, value in metrics.items():
-                        if isinstance(value, (int, float)) and not isinstance(value, bool):
-                            writer.add_scalar(f"test/{selection}/{name}", value, global_step)
-                    belief_metrics = evaluated.get("ppo_patches_belief_metrics")
-                    if isinstance(belief_metrics, Mapping):
-                        for name, value in belief_metrics.items():
-                            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                                writer.add_scalar(
-                                    f"test/{selection}/ppo_patches_belief/{name}",
-                                    value,
-                                    global_step,
-                                )
-        finally:
-            writer.close()
+        run_dir,
+        TrackingRunSpec(
+            job_type="final-test",
+            fingerprint=ppo_fingerprint,
+            group=f"ppo-{ppo_fingerprint}",
+        ),
+    ) as tracking:
+        result = _evaluate_rl_command(
+            config,
+            "test",
+            allow_test=True,
+            run_directory=run_dir,
+        )
+        evaluations = result.get("evaluations")
+        if isinstance(evaluations, Mapping):
+            for selection, evaluated in evaluations.items():
+                if not isinstance(evaluated, Mapping) or evaluated.get("status") != "complete":
+                    continue
+                global_step = int(evaluated.get("checkpoint_global_step") or 0)
+                metrics = evaluated.get("metrics")
+                if not isinstance(metrics, Mapping):
+                    continue
+                scalars = {
+                    f"test/{selection}/{name}": float(value)
+                    for name, value in metrics.items()
+                    if isinstance(value, (int, float)) and not isinstance(value, bool)
+                }
+                belief_metrics = evaluated.get("ppo_patches_belief_metrics")
+                if isinstance(belief_metrics, Mapping):
+                    scalars.update(
+                        {
+                            f"test/{selection}/ppo_patches_belief/{name}": float(value)
+                            for name, value in belief_metrics.items()
+                            if isinstance(value, (int, float)) and not isinstance(value, bool)
+                        }
+                    )
+                tracking.add_scalars(scalars, global_step)
     return result
 
 

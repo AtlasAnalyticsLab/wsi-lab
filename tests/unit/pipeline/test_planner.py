@@ -62,6 +62,20 @@ def test_runtime_augmentation_invalidates_only_ppo_fingerprint(tmp_path: Path, f
             assert before[stage] == after[stage]
 
 
+def test_tracking_configuration_does_not_change_artifact_fingerprints(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    before = stage_fingerprints(config)
+
+    config.logging.tensorboard = False
+    config.logging.wandb = True
+    config.logging.wandb_project = "another-project"
+    config.logging.wandb_entity = "research-team"
+    config.logging.wandb_mode = "offline"
+    config.logging.wandb_tags = ("ablation",)
+
+    assert stage_fingerprints(config) == before
+
+
 def test_complete_manifest_skips_only_when_required_output_exists(tmp_path: Path) -> None:
     config = _config(tmp_path)
     fingerprints = stage_fingerprints(config)

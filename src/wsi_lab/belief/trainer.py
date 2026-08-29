@@ -392,7 +392,7 @@ class BeliefTrainer:
             if resumed:
                 self._emit(
                     "belief/resumed",
-                    {"epoch": self.start_epoch, "step": self.global_step},
+                    {"epoch": self.start_epoch, "global_step": self.global_step},
                 )
         self._write_manifest("incomplete", global_step=self.global_step)
 
@@ -495,6 +495,7 @@ class BeliefTrainer:
                 "belief/complete",
                 {
                     "best_epoch": self.best_epoch,
+                    "global_step": self.global_step,
                     "temperature": calibration.temperature,
                     "validation": final_validation.to_dict(),
                 },
