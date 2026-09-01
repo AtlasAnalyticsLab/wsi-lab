@@ -289,4 +289,8 @@ the agent's perspective, while canonical cell IDs and embedding rows remain
 unchanged. These runtime transforms reuse the existing preprocessing and raw
 RGB caches and are disabled for validation and testing.
 
-The project repository has no license grant. Third-party terms are summarized in [THIRD_PARTY.md](docs/THIRD_PARTY.md).
+## License
+
+Except for third-party components and materials identified separately, WSI Lab
+is licensed under the [Apache License 2.0](LICENSE). Third-party terms are
+summarized in [THIRD_PARTY.md](docs/THIRD_PARTY.md).

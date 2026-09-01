@@ -1,6 +1,9 @@
 # Third-party software
 
-This repository has no owner-supplied license. Nothing in this file grants rights to the project itself.
+Except for the third-party components and materials described below, WSI Lab is
+licensed under the Apache License, Version 2.0. See the repository's
+[`LICENSE`](../LICENSE) file. The WSI Lab license does not replace or modify any
+third-party license or other applicable terms.
 
 AtlasPatch 1.1.0 is pinned because it matches the embedding provenance and supplies all tissue detection. Its upstream repository identifies the project under Creative Commons Attribution-NonCommercial-ShareAlike 4.0. Review its terms before commercial use or redistribution: <https://github.com/AtlasAnalyticsLab/AtlasPatch>.
 

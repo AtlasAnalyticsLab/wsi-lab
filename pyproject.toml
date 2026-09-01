@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=75", "wheel"]
+requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,6 +9,8 @@ description = "Recurrent reinforcement learning for sequential whole-slide image
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 authors = [{name = "WSI Lab contributors"}]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 dependencies = [
   "numpy>=1.26,<3",
   "torch>=2.5.1,<3",
