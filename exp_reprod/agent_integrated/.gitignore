@@ -1,0 +1,8 @@
+/analysis_outputs/
+/runs/
+/runtime/
+/work/
+/.work.*/
+**/__pycache__/
+**/*.pyc
+/harness/benchmarks/histogym_comparison/histogym/upstream/

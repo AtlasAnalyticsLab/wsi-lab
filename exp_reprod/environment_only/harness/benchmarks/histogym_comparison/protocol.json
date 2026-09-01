@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "name": "wsi_lab_histogym_camelyon16_efficiency",
+  "source_revisions": {
+    "wsi_lab": "0deb7837364add790f9530c41f0ef0b5e616c05c",
+    "histogym": "5b742760321d28a469d2ef9494e886a49d0aa7f7"
+  },
+  "dataset": {
+    "name": "CAMELYON16",
+    "root": null,
+    "root_configuration": "supplied to scripts/configure.py --dataset-root",
+    "population": "annotated development tumor slides",
+    "expected_population_size": 111,
+    "sample_seed": 1,
+    "measured_slides": 100,
+    "pilot_slides": 11
+  },
+  "observations": {
+    "tile_width": 224,
+    "tile_height": 224,
+    "render": false
+  },
+  "rollout": {
+    "accepted_steps_per_slide": 100,
+    "abstract_priority_seed": 1,
+    "abstract_priority_algorithm": "Python random.Random(seed + slide ordinal).shuffle over the quota multiset",
+    "abstract_quotas": {
+      "pan": 50,
+      "zoom_in": 25,
+      "zoom_out": 25
+    },
+    "pan_preference_cycle": ["right", "down", "left", "up"],
+    "count_only_state_changes": true,
+    "excluded_actions": ["diagnosis", "stay"],
+    "unavailable_class_policy": "postpone and select the next pending viable class",
+    "unexpected_no_op_policy": "record and retry another valid concrete action; fail on scheduler deadlock"
+  },
+  "online_repetitions": 1,
+  "wsi_lab": {
+    "belief_value": 0.5,
+    "run_belief_model": false,
+    "online_embedding_reads": false,
+    "tissue_detector": "native AtlasPatch",
+    "device": "configured at runtime",
+    "lightweight_evaluation": false
+  },
+  "execution": {
+    "backend_order": ["wsi_lab", "histogym"],
+    "concurrent_backends": false,
+    "reuse_preexisting_generated_artifacts": false,
+    "reuse_within_backend_after_measured_preparation": true,
+    "cache_drop_boundaries": [
+      "before_wsi_lab_measured_block",
+      "after_wsi_lab_and_before_histogym_measured_block"
+    ],
+    "cache_drop_command": "sync; echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null"
+  }
+}
