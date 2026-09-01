@@ -1,0 +1,102 @@
+dataset:
+  name: camelyon16
+  root: ${CAMELYON16_ROOT}
+  slides_dir: images
+  labels: evaluation/reference.csv
+  tissue_masks_dir: background_tissue
+  tumor_masks_dir: masks
+  annotations_dir: annotations
+
+embeddings:
+  root: Embeddings
+  encoder: uni_v2
+  magnifications: [2.5, 5.0, 10.0, 20.0]
+  directory_template: UNI_v2_{magnification}x_256/patches
+  feature_key: features/uni_v2
+  coordinate_key: coords
+  passport_key: passports
+  mapping_tolerance: 0
+  validation_chunk_rows: 8192
+
+workspace:
+  root: ${WSI_LAB_ABLATION_WORKSPACE}
+
+tissue:
+  source: atlaspatch
+  threshold: 0.01
+  rebuild: false
+  atlaspatch:
+    executable: atlaspatch-pinned
+    device: cuda:0
+    segmentation_batch_size: 1
+    timeout_seconds: 7200
+
+environment:
+  overview_size: 224
+  viewport_size: 224
+  start_position: center
+  geometric_augmentation: false
+  photometric_augmentation: false
+  max_episode_steps: 500
+  min_diagnostic_evidence: 32
+  max_visit_count: 10
+  reward_type: default
+  step_cost: 0.001
+  belief_reward_beta: 1.0
+  slide_handle_cache_size: 4
+  viewport_cache_size: 256
+  persistent_rgb_cache: null
+
+belief:
+  seed: 1
+  max_bag_size: 500
+  hidden_dim: 512
+  attention_dim: 256
+  dropout: 0.1
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  max_grad_norm: 5.0
+  batch_size: 8
+  epochs: 100
+  bags_per_slide_per_epoch: 8
+  validation_bags_per_slide: 8
+  validation_bag_sizes: [1, 4, 8, 16, 32, 64, 128, 256, 500]
+  early_stopping_patience: 10
+  device: cuda:0
+  num_workers: 4
+  ece_bins: 15
+  resume: true
+
+split:
+  seed: 1
+  validation_fraction: 0.2
+  stratify_by_center: true
+
+rl:
+  seed: 1
+  num_envs: 8
+  rollout_steps: 128
+  sequence_length: 32
+  learning_rate: 0.00025
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_coef: 0.2
+  update_epochs: 4
+  entropy_coef: 0.01
+  value_coef: 0.5
+  max_grad_norm: 0.5
+  num_minibatches: 4
+  total_timesteps: 2000000
+  anneal_learning_rate: true
+  clip_value_loss: true
+  target_kl: null
+  checkpoint_interval: 100000
+  validation_interval: 2001024
+  vector_backend: sync
+  device: cuda:0
+  belief_device: cpu
+
+logging:
+  tensorboard: true
+  wandb: false
+  wandb_project: wsi-lab

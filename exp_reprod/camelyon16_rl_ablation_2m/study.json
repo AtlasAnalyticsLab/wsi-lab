@@ -1,0 +1,174 @@
+{
+  "schema_version": 1,
+  "study_id": "camelyon16-rl-ablation-2m",
+  "source_revision": "23cfcf5145d0349448d3d822aa4e59f8bff8274e",
+  "source_tree": {
+    "algorithm": "sha256sum-lines-v1",
+    "python_files": 86,
+    "sha256": "fbeefd2b1f9c487aa5eef81a152ea953084f069105576d7b466c2cc8006ae7fa"
+  },
+  "atlaspatch": {
+    "package_version": "1.1.0",
+    "sam2_commit": "2b90b9f5ceec907a1c18123530e92e794ad901a4",
+    "sam2_config_filename": "sam2.1_hiera_t.yaml",
+    "sam2_config_sha256": "f932eac1c6241e910031b2f000a81cd9f8a8d4896e2277ab5ffb721f378b188d",
+    "model_repository": "AtlasAnalyticsLab/AtlasPatch",
+    "model_filename": "model.pth",
+    "model_snapshot": "c50a4e86a140c02234897f72f2f4385adb08de50",
+    "model_sha256": "51481c42c1079738f8c506f4da6183002aa34b1eb27d79423ae8f802e052be22",
+    "model_size": 156281205
+  },
+  "software_reference": {
+    "python": "3.11.16",
+    "distributions": {
+      "Pillow": "12.3.0",
+      "PyYAML": "6.0.3",
+      "SAM-2": "1.0",
+      "atlas-patch": "1.1.0",
+      "gymnasium": "1.3.0",
+      "h5py": "3.16.0",
+      "huggingface-hub": "1.28.0",
+      "imagecodecs": "2026.3.6",
+      "matplotlib": "3.11.1",
+      "numpy": "2.4.6",
+      "opencv-python": "4.11.0.86",
+      "openslide-python": "1.4.6",
+      "psutil": "7.2.2",
+      "pydantic": "2.13.4",
+      "scikit-learn": "1.9.0",
+      "scipy": "1.17.1",
+      "tensorboard": "2.21.0",
+      "tifffile": "2026.3.3",
+      "torch": "2.5.1",
+      "torchvision": "0.20.1",
+      "tqdm": "4.70.0"
+    }
+  },
+  "software_reproduction": {
+    "python": "3.11.11",
+    "distributions": {
+      "Pillow": "11.0.0",
+      "PyYAML": "6.0.2",
+      "SAM-2": "1.0",
+      "atlas-patch": "1.1.0",
+      "gymnasium": "1.1.0",
+      "h5py": "3.12.1",
+      "huggingface-hub": "0.26.5",
+      "imagecodecs": "2024.9.22",
+      "matplotlib": "3.9.2",
+      "numpy": "1.26.4",
+      "opencv-python": "4.10.0.84",
+      "openslide-python": "1.4.1",
+      "psutil": "6.1.0",
+      "pydantic": "2.10.2",
+      "scikit-learn": "1.5.2",
+      "scipy": "1.14.1",
+      "tensorboard": "2.18.0",
+      "tifffile": "2024.9.20",
+      "torch": "2.5.1",
+      "torchvision": "0.20.1",
+      "tqdm": "4.67.1"
+    }
+  },
+  "dataset": "camelyon16",
+  "training_split": "train",
+  "variants": [
+    {
+      "id": "v1_full",
+      "description": "Full WSI-Lab pipeline"
+    },
+    {
+      "id": "v2_viewport_only",
+      "description": "Viewport-only policy observation"
+    },
+    {
+      "id": "v3_no_tissue_mask",
+      "description": "Full observation with geometric navigation and no tissue action mask"
+    },
+    {
+      "id": "v4_no_diagnosis",
+      "description": "Navigation-only policy with belief classification at the horizon"
+    },
+    {
+      "id": "v5_no_belief",
+      "description": "Full policy inputs except belief, with no belief feature reads"
+    },
+    {
+      "id": "v6_combined",
+      "description": "Viewport-only geometric navigation with no diagnosis action or belief"
+    }
+  ],
+  "starts": [
+    "center",
+    "random"
+  ],
+  "seeds": [
+    1,
+    2,
+    3
+  ],
+  "main": {
+    "requested_timesteps": 2000000,
+    "checkpoint_interval": 100000,
+    "run_count": 36
+  },
+  "smoke": {
+    "requested_timesteps": 1024,
+    "num_envs": 2,
+    "rollout_steps": 64,
+    "sequence_length": 16,
+    "num_minibatches": 2,
+    "mapping": [
+      {
+        "variant": "v1_full",
+        "start": "center",
+        "seed": 1
+      },
+      {
+        "variant": "v2_viewport_only",
+        "start": "random",
+        "seed": 1
+      },
+      {
+        "variant": "v3_no_tissue_mask",
+        "start": "random",
+        "seed": 1
+      },
+      {
+        "variant": "v4_no_diagnosis",
+        "start": "center",
+        "seed": 1
+      },
+      {
+        "variant": "v5_no_belief",
+        "start": "center",
+        "seed": 1
+      },
+      {
+        "variant": "v6_combined",
+        "start": "random",
+        "seed": 1
+      }
+    ]
+  },
+  "environment": {
+    "max_episode_steps": 500,
+    "reward_type": "default",
+    "vector_backend": "sync"
+  },
+  "monitoring": {
+    "training_only": true,
+    "cohort_size": 30,
+    "positive_slides": 15,
+    "cohort_seed": 20260831,
+    "milestones": [
+      100000,
+      1000000,
+      2000000
+    ]
+  },
+  "evaluation": {
+    "validation_enabled": false,
+    "official_test_access": false
+  }
+}
