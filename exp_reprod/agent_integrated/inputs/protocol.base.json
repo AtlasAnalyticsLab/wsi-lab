@@ -2,9 +2,17 @@
   "schema_version": 1,
   "name": "wsi_lab_histogym_native_observation_recurrent_ppo_efficiency",
   "scope": "computational efficiency only; no diagnostic-accuracy or reward comparison",
-  "source_revisions": {
-    "wsi_lab": "0deb7837364add790f9530c41f0ef0b5e616c05c",
-    "histogym": "5b742760321d28a469d2ef9494e886a49d0aa7f7"
+  "source_identity": {
+    "wsi_lab": {
+      "kind": "sha256-file-manifest-v1",
+      "manifest": "exp_reprod/provenance/wsi_lab_source.sha256",
+      "manifest_sha256": "ae742e4ccdfc0d8e951e8ace1a6bd67c3317cce5cd4100a8496d61a7ca7d32f4",
+      "measured_revision": "0deb7837364add790f9530c41f0ef0b5e616c05c"
+    },
+    "histogym": {
+      "kind": "git-commit",
+      "revision": "5b742760321d28a469d2ef9494e886a49d0aa7f7"
+    }
   },
   "cohort": {
     "manifest": "cohort.json",

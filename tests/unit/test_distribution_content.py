@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_FILES = (
+    "LICENSE",
     "MANIFEST.in",
     "README.md",
     "environment.yml",
@@ -16,6 +17,7 @@ PROJECT_FILES = (
 )
 PROJECT_DIRECTORIES = ("configs", "docs", "src")
 USER_ASSETS = (
+    "LICENSE",
     "README.md",
     "environment.yml",
     "configs/camelyon16.example.yaml",
@@ -89,8 +91,17 @@ def test_sdist_and_wheel_retain_user_facing_assets(tmp_path: Path) -> None:
 
     with zipfile.ZipFile(wheel) as archive:
         wheel_members = tuple(PurePosixPath(name) for name in archive.namelist())
+        metadata_member = next(
+            member
+            for member in wheel_members
+            if member.name == "METADATA" and member.parent.name.endswith(".dist-info")
+        )
+        metadata = archive.read(str(metadata_member)).decode("utf-8")
     assert PurePosixPath("wsi_lab/__init__.py") in wheel_members
     assert any(member.name == "entry_points.txt" for member in wheel_members)
+    assert any(member.parts[-2:] == ("licenses", "LICENSE") for member in wheel_members)
+    assert "License-Expression: Apache-2.0" in metadata
+    assert "License-File: LICENSE" in metadata
     for relative in USER_ASSETS:
         suffix = PurePosixPath("share") / "wsi-lab" / relative
         assert any(

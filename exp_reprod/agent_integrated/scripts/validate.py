@@ -20,7 +20,8 @@ from benchmarks.histogym_comparison.dl_online.common import (  # noqa: E402
     load_protocol,
 )
 
-WSI_REVISION = "0deb7837364add790f9530c41f0ef0b5e616c05c"
+REPO_ROOT = EXP_ROOT.parents[1]
+WSI_SOURCE_VERIFIER = REPO_ROOT / "exp_reprod/scripts/verify_wsi_source.py"
 HISTOGYM_REVISION = "5b742760321d28a469d2ef9494e886a49d0aa7f7"
 
 
@@ -30,10 +31,23 @@ def git_head(path: Path) -> str:
     ).strip()
 
 
+def verify_wsi_source() -> dict[str, object]:
+    output = subprocess.check_output(
+        [
+            sys.executable,
+            str(WSI_SOURCE_VERIFIER),
+            "--repository-root",
+            str(REPO_ROOT),
+        ],
+        text=True,
+    )
+    return dict(json.loads(output))
+
+
 def main() -> int:
     work = EXP_ROOT / "work"
     runtime = EXP_ROOT / "runtime"
-    source = runtime / "wsi-lab-source"
+    source = REPO_ROOT
     histogym = (
         HARNESS_ROOT
         / "benchmarks/histogym_comparison/histogym/upstream/HistoGym"
@@ -50,12 +64,17 @@ def main() -> int:
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         raise FileNotFoundError(f"setup/configuration is incomplete: {missing}")
-    if git_head(source) != WSI_REVISION:
-        raise RuntimeError("WSI-Lab source revision differs from the measured revision")
+    wsi_source_identity = verify_wsi_source()
     if git_head(histogym) != HISTOGYM_REVISION:
         raise RuntimeError("HistoGym source revision differs from the measured revision")
 
     protocol = load_protocol(work / "protocol.json")
+    expected_source_identity = protocol.value["source_identity"]["wsi_lab"]
+    if (
+        expected_source_identity["manifest_sha256"]
+        != wsi_source_identity["manifest_sha256"]
+    ):
+        raise RuntimeError("WSI-Lab source identity differs from the configured protocol")
     if len(protocol.episodes) != 10_000 or protocol.total_interactions != 1_000_000:
         raise RuntimeError("configured workload is not 10,000 x 100")
     configuration = json.loads((work / "configuration.json").read_text(encoding="utf-8"))
@@ -95,7 +114,7 @@ def main() -> int:
                 "histogym_parameters": histo_metadata["trainable_parameter_count"],
                 "shared_initial_weights_verified": True,
                 "device": device,
-                "wsi_lab_revision": WSI_REVISION,
+                "wsi_lab_source_identity": wsi_source_identity,
                 "histogym_revision": HISTOGYM_REVISION,
             },
             sort_keys=True,

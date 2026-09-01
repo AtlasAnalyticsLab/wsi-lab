@@ -97,7 +97,6 @@ class AtlasPatchConfig(ConfigModel):
     executable: str = "atlaspatch"
     device: str = "cuda:0"
     segmentation_batch_size: StrictInt = Field(default=1, ge=1)
-    keep_overlay: StrictBool = False
     timeout_seconds: StrictInt = Field(default=7200, ge=1)
 
 
@@ -203,7 +202,6 @@ class RLConfig(ConfigModel):
     vector_backend: VectorBackend = VectorBackend.SYNC
     device: str = "cuda:0"
     belief_device: str = "cpu"
-    evaluation_episodes: StrictInt = Field(default=54, ge=1)
 
     @model_validator(mode="after")
     def recurrent_batch_shape(self) -> RLConfig:

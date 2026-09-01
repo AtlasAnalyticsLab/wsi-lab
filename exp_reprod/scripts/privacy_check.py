@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -14,7 +15,22 @@ SELF = Path(__file__).resolve()
 GENERATED_DIRECTORIES = {"analysis_outputs", "runs", "runtime", "work"}
 FORBIDDEN_DIRECTORIES = {"__pycache__", "reference_results"}
 FORBIDDEN_FILENAMES = {"machine.json"}
-FORBIDDEN_SUFFIXES = {".h5", ".npy", ".npz", ".pdf", ".png", ".pt", ".pth", ".pyc"}
+FORBIDDEN_SUFFIXES = {
+    ".h5",
+    ".npy",
+    ".npz",
+    ".pdf",
+    ".png",
+    ".pt",
+    ".pth",
+    ".pyc",
+}
+ALLOWED_ARTIFACTS = {
+    Path("agent_integrated/models/calibrated_checkpoint.pt"): {
+        "sha256": "71fb6677a5307a53424e84a111e5b88c426e845065b85f8bf09c03f7d0d239fc",
+        "bytes": 4_215_860,
+    }
+}
 LOCAL_PATH_PATTERNS = (
     re.compile(r"/home/[^/\s]+/"),
     re.compile(r"/mnt/[^/\s]+/"),
@@ -32,6 +48,14 @@ FORBIDDEN_HISTORY_PATTERNS = (
     re.compile(r"(?:^|/)machine\.json(?:$|\s)", re.MULTILINE),
     re.compile(r"(?:^|/)[^/\s]*commands?\.json(?:$|\s)", re.MULTILINE),
 )
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def main() -> int:
@@ -55,7 +79,19 @@ def main() -> int:
                 findings.append(f"forbidden machine inventory: {relative}")
             if "command" in lower_name and path.suffix.lower() == ".json":
                 findings.append(f"historical command manifest: {relative}")
-            if path.suffix.lower() in FORBIDDEN_SUFFIXES:
+            allowed = ALLOWED_ARTIFACTS.get(relative)
+            if allowed is not None:
+                observed_hash = sha256_file(path)
+                observed_bytes = path.stat().st_size
+                if observed_hash != allowed["sha256"]:
+                    findings.append(
+                        f"approved artifact hash differs in {relative}: {observed_hash}"
+                    )
+                if observed_bytes != allowed["bytes"]:
+                    findings.append(
+                        f"approved artifact size differs in {relative}: {observed_bytes}"
+                    )
+            elif path.suffix.lower() in FORBIDDEN_SUFFIXES:
                 findings.append(f"bundled binary/model/result artifact: {relative}")
             if path.resolve() == SELF:
                 continue

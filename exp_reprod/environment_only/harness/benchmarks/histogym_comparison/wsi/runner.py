@@ -70,7 +70,7 @@ DEFAULT_MANIFEST = (
 DEFAULT_CONFIG = HARNESS_REPOSITORY_ROOT / "configs/camelyon16.yaml"
 EXPECTED_OBSERVATION_BYTES_224 = (5 * 224 * 224 + 3 * 224 * 224 + 5) * 4
 RESULT_SCHEMA_VERSION = 1
-EXPECTED_WSI_LAB_REVISION = "0deb7837364add790f9530c41f0ef0b5e616c05c"
+WSI_LAB_SOURCE_VERIFIER = REPOSITORY_ROOT / "exp_reprod/scripts/verify_wsi_source.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,44 +136,27 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _verify_source_revision() -> dict[str, Any]:
+def _verify_source_identity() -> dict[str, Any]:
     try:
-        revision_call = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=REPOSITORY_ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        status_call = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=no"],
-            cwd=REPOSITORY_ROOT,
+        verification = subprocess.run(
+            [
+                sys.executable,
+                str(WSI_LAB_SOURCE_VERIFIER),
+                "--repository-root",
+                str(REPOSITORY_ROOT),
+            ],
             check=True,
             capture_output=True,
             text=True,
             timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        raise RuntimeError(f"cannot verify pinned WSI-Lab source revision: {exc}") from exc
-    revision = revision_call.stdout.strip()
-    if revision != EXPECTED_WSI_LAB_REVISION:
-        raise RuntimeError(
-            f"WSI-Lab revision drift: {revision!r} != {EXPECTED_WSI_LAB_REVISION!r}"
-        )
-    tracked_status = status_call.stdout.strip()
-    if tracked_status:
-        raise RuntimeError(
-            "published WSI-Lab worktree has tracked modifications; benchmark requires "
-            f"a clean pinned tree:\n{tracked_status}"
-        )
-    return {
-        "expected_revision": EXPECTED_WSI_LAB_REVISION,
-        "observed_revision": revision,
-        "matches_expected": True,
-        "tracked_worktree_clean": True,
-        "untracked_files_ignored_by_check": True,
-    }
+        detail = getattr(exc, "stderr", None) or str(exc)
+        raise RuntimeError(f"cannot verify submitted WSI-Lab source: {detail}") from exc
+    try:
+        return dict(json.loads(verification.stdout))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("WSI-Lab source verifier returned invalid JSON") from exc
 
 
 def _versions() -> dict[str, str | None]:
@@ -196,7 +179,7 @@ def _versions() -> dict[str, str | None]:
 def _provenance(config_path: Path, selection: CohortSelection) -> dict[str, Any]:
     return {
         "created_at_utc": _now(),
-        "source_revision_check": _verify_source_revision(),
+        "source_identity_check": _verify_source_identity(),
         "config_sha256": sha256_file(config_path),
         "cohort": selection.to_dict(),
         "versions": _versions(),
@@ -620,7 +603,7 @@ def _run_navigation_artifact_stage(
 
 def run_prepare(args: argparse.Namespace) -> dict[str, Any]:
     operation_started = time.perf_counter_ns()
-    _verify_source_revision()
+    _verify_source_identity()
     if not args.device.startswith("cuda:"):
         raise ValueError("AtlasPatch requires an explicit CUDA device")
     if int(args.device.split(":", 1)[1]) != args.gpu_index:
@@ -1237,7 +1220,7 @@ def _online_aggregate(
 
 def run_online(args: argparse.Namespace) -> dict[str, Any]:
     operation_started = time.perf_counter_ns()
-    _verify_source_revision()
+    _verify_source_identity()
     config_path = Path(args.config).expanduser().resolve()
     selection = load_cohort(args.manifest, cohort=args.cohort, limit=args.limit)
     config, adapter = _load_native_context(config_path, selection)
@@ -1361,7 +1344,7 @@ def run_online(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def run_validate(args: argparse.Namespace) -> dict[str, Any]:
-    _verify_source_revision()
+    _verify_source_identity()
     config_path = Path(args.config).expanduser().resolve()
     selection = load_cohort(args.manifest, cohort=args.cohort, limit=args.limit)
     config, adapter = _load_native_context(config_path, selection)

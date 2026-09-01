@@ -3,7 +3,7 @@
   "name": "wsi_lab_histogym_camelyon16_longrun_efficiency",
   "inherits_scientific_rules_from": {
     "path": "../harness/benchmarks/histogym_comparison/protocol.json",
-    "sha256": "7a6898a167cc6d9935ad02eb5e97d6ef959bd07a8c76d60fccb9c938c6dfb9f0"
+    "sha256": "f0d4dc52eb71c4c5cdd1a3d7b8dc0c7c85047759fd8b8534f500799997b417d3"
   },
   "manifest": {
     "path": "cohort.json",
@@ -11,9 +11,17 @@
     "cohort_key": "slides",
     "expected_slides": 100
   },
-  "source_revisions": {
-    "wsi_lab": "0deb7837364add790f9530c41f0ef0b5e616c05c",
-    "histogym": "5b742760321d28a469d2ef9494e886a49d0aa7f7"
+  "source_identity": {
+    "wsi_lab": {
+      "kind": "sha256-file-manifest-v1",
+      "manifest": "exp_reprod/provenance/wsi_lab_source.sha256",
+      "manifest_sha256": "ae742e4ccdfc0d8e951e8ace1a6bd67c3317cce5cd4100a8496d61a7ca7d32f4",
+      "measured_revision": "0deb7837364add790f9530c41f0ef0b5e616c05c"
+    },
+    "histogym": {
+      "kind": "git-commit",
+      "revision": "5b742760321d28a469d2ef9494e886a49d0aa7f7"
+    }
   },
   "rollout": {
     "accepted_steps_per_episode": 100,

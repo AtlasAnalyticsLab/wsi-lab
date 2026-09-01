@@ -19,10 +19,12 @@ embedding lookup, and a frozen calibrated ABMIL belief model. The belief model
 is called but never optimized; UNI-v2 generation is not part of the run.
 WSI-Lab diagnosis actions and HistoGym's stay action are masked.
 
-Pinned source revisions:
+Pinned source identities:
 
-- WSI-Lab: `0deb7837364add790f9530c41f0ef0b5e616c05c`
-- HistoGym: `5b742760321d28a469d2ef9494e886a49d0aa7f7`
+- WSI-Lab: the submitted source snapshot verified by
+  `../provenance/wsi_lab_source.sha256`; the measured implementation was based
+  on revision `0deb7837364add790f9530c41f0ef0b5e616c05c`.
+- HistoGym: Git commit `5b742760321d28a469d2ef9494e886a49d0aa7f7`.
 
 The exact Python/PyTorch environment is in `environments/environment.yml`.
 
@@ -31,18 +33,12 @@ The exact Python/PyTorch environment is in `environments/environment.yml`.
 - Linux with Git, Conda, and OpenSlide-compatible system support.
 - A CUDA-capable device visible to PyTorch.
 - CAMELYON16 and the four UNI-v2 embedding collections in the layout below.
-- The frozen calibrated checkpoint identified in `models/README.md`.
+- The bundled frozen calibrated checkpoint identified in `models/README.md`.
 
-The checkpoint is an external experimental input and is not included in this
-source-only package. Obtain it from the paper's separately distributed
-artifact bundle or from the authors, verify its hash, and store it locally.
-The checkpoint cannot be reconstructed from its hash.
-
-Set three shell variables:
+Set two shell variables:
 
 ```bash
 export CAMELYON16_ROOT
-export BELIEF_CHECKPOINT
 export CUDA_DEVICE
 unset CUDA_VISIBLE_DEVICES
 ```
@@ -76,18 +72,18 @@ bash scripts/verify_package.sh
 bash scripts/setup.sh
 ```
 
-Setup creates ignored runtime state, checks out the pinned WSI-Lab revision,
-clones the pinned HistoGym revision, and creates one shared Python/PyTorch
-environment. A narrow in-process Gym-to-Gymnasium alias allows both native
-backends to use the identical PPO implementation without editing HistoGym.
-The repository's WSI-Lab training and library files are not modified.
+Setup verifies and installs the extracted WSI-Lab source tree, clones the
+pinned HistoGym revision, and creates one shared Python/PyTorch environment
+under ignored `runtime/`. A narrow in-process Gym-to-Gymnasium alias allows
+both native backends to use the identical PPO implementation without editing
+HistoGym. WSI-Lab Git history is not required, and its source files are not
+modified.
 
 ## 2. Configure the local inputs
 
 ```bash
 runtime/unified-env/bin/python scripts/configure.py \
   --dataset-root "${CAMELYON16_ROOT}" \
-  --belief-checkpoint "${BELIEF_CHECKPOINT}" \
   --device "${CUDA_DEVICE}"
 ```
 
@@ -101,9 +97,10 @@ checkpoint by hash, and records the selected CUDA device.
 bash scripts/validate.sh
 ```
 
-Validation checks source revisions, workload size, input identities, policy
-parameter counts, and bit-identical initialization of the shared viewport CNN,
-GRU, and critic. It does not open a WSI or run an episode.
+Validation checks the submitted WSI-Lab source identity, the HistoGym revision,
+workload size, input identities, policy parameter counts, and bit-identical
+initialization of the shared viewport CNN, GRU, and critic. It does not open a
+WSI or run an episode.
 
 ## 4. Run the two measured blocks
 

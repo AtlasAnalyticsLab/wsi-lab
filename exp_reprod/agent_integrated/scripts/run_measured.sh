@@ -2,10 +2,11 @@
 set -euo pipefail
 
 readonly EXP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly REPO_ROOT="$(cd "${EXP_ROOT}/../.." && pwd)"
 readonly HARNESS_ROOT="${EXP_ROOT}/harness"
 readonly WORK_ROOT="${EXP_ROOT}/work"
 readonly RUN_ROOT="${EXP_ROOT}/runs"
-readonly WSI_SOURCE_ROOT="${EXP_ROOT}/runtime/wsi-lab-source"
+readonly WSI_SOURCE_ROOT="${REPO_ROOT}"
 readonly PYTHON="${EXP_ROOT}/runtime/unified-env/bin/python"
 readonly CONFIG="${HARNESS_ROOT}/configs/camelyon16.yaml"
 readonly MANIFEST="${WORK_ROOT}/cohort.json"

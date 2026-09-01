@@ -18,7 +18,8 @@ if str(HARNESS_ROOT) not in sys.path:
 
 from benchmarks.histogym_comparison.common.longrun import load_episode_plan  # noqa: E402
 
-WSI_REVISION = "0deb7837364add790f9530c41f0ef0b5e616c05c"
+REPO_ROOT = EXP_ROOT.parents[1]
+WSI_SOURCE_VERIFIER = REPO_ROOT / "exp_reprod/scripts/verify_wsi_source.py"
 HISTOGYM_REVISION = "5b742760321d28a469d2ef9494e886a49d0aa7f7"
 
 
@@ -28,10 +29,23 @@ def git_head(path: Path) -> str:
     ).strip()
 
 
+def verify_wsi_source() -> dict[str, object]:
+    output = subprocess.check_output(
+        [
+            sys.executable,
+            str(WSI_SOURCE_VERIFIER),
+            "--repository-root",
+            str(REPO_ROOT),
+        ],
+        text=True,
+    )
+    return dict(json.loads(output))
+
+
 def main() -> int:
     work = EXP_ROOT / "work"
     runtime = EXP_ROOT / "runtime"
-    source = runtime / "wsi-lab-source"
+    source = REPO_ROOT
     histogym = (
         HARNESS_ROOT
         / "benchmarks/histogym_comparison/histogym/upstream/HistoGym"
@@ -53,10 +67,18 @@ def main() -> int:
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         raise FileNotFoundError(f"setup/configuration is incomplete: {missing}")
-    if git_head(source) != WSI_REVISION:
-        raise RuntimeError("WSI-Lab source revision differs from the measured revision")
+    wsi_source_identity = verify_wsi_source()
     if git_head(histogym) != HISTOGYM_REVISION:
         raise RuntimeError("HistoGym source revision differs from the measured revision")
+    protocol_document = json.loads(
+        (work / "protocol.json").read_text(encoding="utf-8")
+    )
+    expected_source_identity = protocol_document["source_identity"]["wsi_lab"]
+    if (
+        expected_source_identity["manifest_sha256"]
+        != wsi_source_identity["manifest_sha256"]
+    ):
+        raise RuntimeError("WSI-Lab source identity differs from the configured protocol")
 
     plan = load_episode_plan(
         work / "balanced_random_10k.json",
@@ -106,7 +128,7 @@ def main() -> int:
                 "accepted_actions": plan.episode_count * plan.accepted_steps_per_episode,
                 "slides": len(plan.unique_slide_ids),
                 "device": device,
-                "wsi_lab_revision": WSI_REVISION,
+                "wsi_lab_source_identity": wsi_source_identity,
                 "histogym_revision": HISTOGYM_REVISION,
             },
             sort_keys=True,

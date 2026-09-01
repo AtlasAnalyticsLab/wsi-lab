@@ -221,7 +221,9 @@ There is deliberately no Otsu, HSV, or other fallback. AtlasPatch failures inclu
 
 ## Documentation and configuration in distributions
 
-Source distributions contain `README.md`, `environment.yml`, `configs/*.yaml`, and `docs/*.md`. Wheels install the same user-facing assets under the environment data prefix:
+Source distributions contain `LICENSE`, `README.md`, `environment.yml`,
+`configs/*.yaml`, and `docs/*.md`. Wheels install the same user-facing assets
+under the environment data prefix:
 
 ```text
 <sys.prefix>/share/wsi-lab/

@@ -1,296 +1,319 @@
 # WSI Lab
 
-`wsi-lab` is a research package for sequential examination of whole-slide images. It builds a dense six-level navigation hierarchy, attaches sparse tissue-filtered UNI v2 evidence, trains a calibrated gated-attention MIL belief model, and supplies a local recurrent-PPO implementation for `WSILab-v0`.
+`wsi-lab` is a research package for sequential examination of whole-slide
+images (WSIs). It builds a dense six-level navigation hierarchy, attaches
+sparse tissue-filtered UNI-v2 evidence, trains a calibrated gated-attention
+multiple-instance-learning belief model, and provides a local recurrent-PPO
+implementation for the Gymnasium environment `WSILab-v0`.
 
-The package has native-layout adapters for CAMELYON16, CAMELYON17, their
-combined binary-classification cohort, and TCGA-NSCLC (LUAD and LUSC), plus a
-manifest adapter for other binary WSI datasets. All adapters use the existing
-AtlasPatch/UNI v2 HDF5 schema. PEAN is intentionally unsupported.
+The package supports the native layouts of CAMELYON16, CAMELYON17, a combined
+CAMELYON16/17 binary cohort, and TCGA-NSCLC (LUAD/LUSC), plus an explicit
+manifest adapter for other binary WSI datasets. PEAN embeddings are
+intentionally unsupported.
 
-## Install
+> **Research use only.** This software is an experimental research artifact,
+> not a medical device or a system for clinical diagnosis or patient care.
 
-Create the dedicated environment; do not reuse another WSI environment:
+## Quick start from the workshop ZIP
+
+Extract the submitted source archive and run all commands from its root:
 
 ```bash
-git clone <repository-url>
-cd wsi-lab
+unzip <submission-archive>.zip
+cd <extracted-wsi-lab-directory>
 conda env create --file environment.yml
 conda activate wsi-lab
+wsi-lab smoke-test
 ```
 
-W&B tracking is optional and is not installed by the default environment. To
-enable it, install the extra and authenticate before setting `logging.wandb`
-to `true`:
+The reference environment is intended for Linux, pins Python 3.11 and CUDA
+12.1, installs native OpenSlide, and installs this source tree in editable mode
+with its development tools. It requires Conda, Git, network access while
+installing pinned dependencies, an NVIDIA driver compatible with the selected
+PyTorch/CUDA build, and enough local storage for WSIs and preprocessing
+artifacts. Package metadata permits Python 3.11 or 3.12, but the submitted
+environment is the reproducibility reference.
+
+Do not reuse an unrelated WSI environment. See the
+[installation guide](docs/INSTALLATION.md) for environment verification, the
+CPU-only development variant, AtlasPatch/SAM2 setup, and troubleshooting.
+
+The smoke test is entirely synthetic and requires no dataset or configuration.
+The standard data-free checks are:
+
+```bash
+wsi-lab smoke-test
+python -m pytest -m "not real and not gpu and not slow and not atlaspatch"
+ruff check src tests
+mypy src/wsi_lab
+```
+
+Weights & Biases tracking is optional and is not installed by the reference
+environment:
 
 ```bash
 python -m pip install -e '.[wandb]'
 wandb login
 ```
 
-See [the installation guide](docs/INSTALLATION.md) for verification, CPU setup, AtlasPatch/SAM2 requirements, and troubleshooting.
+### Source ZIP versus Python distributions
 
-## Configure
+The workshop ZIP is the complete submission artifact: it contains the source,
+tests, configuration examples, documentation, license, and `exp_reprod/`.
+Neither a wheel nor a source distribution is needed to use it. If a packaging
+check is desired, run:
+
+```bash
+python -m build
+```
+
+The generated, ignored `dist/` directory should not be placed inside the
+workshop ZIP unless the venue explicitly requests built distributions. Wheels
+and source distributions are installation artifacts, not substitutes for the
+full workshop archive or its reproduction materials.
+
+## External inputs and licensing boundary
+
+The source archive does **not** redistribute:
+
+- CAMELYON16, CAMELYON17, or TCGA whole-slide images, labels, or annotations;
+- the four required UNI-v2 HDF5 embedding collections at 2.5x, 5x, 10x, and
+  20x magnification; or
+- model assets downloaded by AtlasPatch/SAM2 for tissue segmentation.
+
+WSI Lab consumes existing UNI-v2 embeddings in the AtlasPatch HDF5 schema; it
+does not generate those embeddings. The expected layouts and keys are defined
+in the [data-format guide](docs/DATA_FORMAT.md).
+
+The calibrated belief checkpoint required by the agent-integrated efficiency
+experiment **is included** at
+`exp_reprod/agent_integrated/models/calibrated_checkpoint.pt`. The reproduction
+scripts verify its recorded size and SHA-256 before use.
+
+WSI Lab's own code is Apache-2.0, but the pinned AtlasPatch 1.1.0 dependency is
+identified upstream as CC BY-NC-SA 4.0. WSI Lab's license does not replace
+AtlasPatch's terms or the terms of downloaded model assets. Review
+[third-party software and licensing](docs/THIRD_PARTY.md), especially before
+redistribution or commercial use.
+
+## Configure a dataset
+
+Keep each dataset in its native layout. Do not copy or rearrange WSIs into
+project-level `train/`, `val/`, or `test/` directories. The selected adapter
+reads native files in place, while the split manager stores deterministic
+membership beneath the ignored `workspace/` directory.
+
+For CAMELYON16:
 
 ```bash
 export CAMELYON16_ROOT=/path/to/CAMELYON16
 wsi-lab validate --config configs/camelyon16.yaml
 ```
 
-The default split preserves every `test_*` slide as official test and creates a deterministic 216/54 train/validation split over development slides (seed 1, stratified by binary label and center). Test access is guarded; evaluation defaults to validation.
+Portable starting configurations and their required root variables are:
 
-AtlasPatch is the default tissue-mask source. Preprocessing caches one binary
-mask per slide; tumor masks and annotations are never used to construct this
-mask or the navigation graph. Set `tissue.source` explicitly to `auto` to
-prefer a compatible dataset sidecar or to `existing` to require one.
+| Configuration | Dataset-root variable |
+| --- | --- |
+| `configs/camelyon16.example.yaml` | `CAMELYON16_ROOT` |
+| `configs/camelyon17.example.yaml` | `CAMELYON17_ROOT` |
+| `configs/camelyon16_17.example.yaml` | `CAMELYON_DATASETS_ROOT` |
+| `configs/tcga_nsclc.example.yaml` | `TCGA_NSCLC_ROOT` |
+| `configs/generic.example.yaml` | `WSI_DATASET_ROOT` |
 
-## Keep datasets in their native layouts
+Retain the `${...}` expression in shared configurations instead of inserting a
+personal absolute path. Configuration is strict Pydantic v2 YAML: unknown
+keys and unset environment variables fail before expensive work. See
+[configuration](docs/CONFIGURATION.md) for all settings and
+[data formats](docs/DATA_FORMAT.md) for native directory trees, split policies,
+and the generic `metadata.csv` contract.
 
-Do not move, copy, rename, or manually arrange WSIs into `train/`, `val/`, and
-`test/` directories. Dataset storage and experimental split membership are
-separate. A dataset adapter reads the native files in place, normalizes slide
-metadata, and the split manager writes deterministic membership to the ignored
-`workspace/` directory.
+The adapters apply these high-level split rules:
 
-Select the matching adapter with `dataset.name`:
+- CAMELYON16 preserves its labeled `test_*` cohort and creates a deterministic
+  train/validation split from development slides.
+- CAMELYON17 groups labeled development slides by patient and retains blind
+  official-test records as unassigned.
+- CAMELYON16/17 builds each source split independently and then unions matching
+  partitions without copying either dataset.
+- TCGA-NSCLC treats LUAD/LUSC as classes, not storage splits, and groups all
+  slides from a patient into one generated partition.
+- The generic adapter requires explicit labels, paths, patient IDs, centers,
+  and cohort assignments; it never infers them from filenames.
 
-- `camelyon16` reads `images/`, `evaluation/reference.csv`, and the dataset-level
-  `Embeddings/` directory. The labeled `test_*` cases remain the official test
-  partition; development slides are split at slide level because this layout
-  has no reliable patient identifier.
-- `camelyon17` reads `images/`, `stages.csv`, and the dataset-level
-  `Embeddings/` directory. Labeled patients are split as patient groups. Images
-  without stage rows are retained as blind official-test records and are never
-  used for training, reward computation, or metrics.
-- `camelyon16_17` reads both native datasets beneath one parent without copying
-  them. It preserves each source's independently generated split and unions the
-  corresponding train, validation, and labeled-test partitions. CAMELYON16
-  normal and CAMELYON17 negative slides map to benign (`0`); tumor, ITC, micro,
-  and macro slides map to cancerous (`1`). CAMELYON17's blind official-test
-  slides remain unassigned.
-- `tcga_nsclc` reads the native `TCGA-LUAD/` and `TCGA-LUSC/` cohorts, each with
-  its own `images/` and `Embeddings/` directories. LUAD/LUSC are class cohorts,
-  not data splits. The package generates train/validation/test membership while
-  keeping every slide from one TCGA patient in one partition.
-- `generic` reads an explicit root-relative `metadata.csv`. Use this for an
-  otherwise unsupported binary WSI dataset; it never guesses labels, patient
-  membership, cohorts, or image paths from filenames.
+AtlasPatch is the default tissue-mask source. Tumor masks and annotations are
+never used to create tissue masks or the navigation graph. Set `tissue.source`
+to `auto` to prefer a compatible configured sidecar, or to `existing` to
+require one.
 
-Portable starting configurations are supplied as
-`configs/camelyon16.example.yaml`, `configs/camelyon17.example.yaml`,
-`configs/camelyon16_17.example.yaml`, `configs/tcga_nsclc.example.yaml`, and
-`configs/generic.example.yaml`. Set the environment variable named at the top
-of the selected file; do not replace it with a personal absolute path in a
-configuration that will be committed.
+## Training and evaluation
 
-For a generic dataset, use this minimum structure:
-
-```text
-CUSTOM_DATASET/
-├── metadata.csv
-├── images/
-│   └── <slide image files>
-└── Embeddings/
-    ├── UNI_v2_2.5x_256/patches/<slide_id>.h5
-    ├── UNI_v2_5x_256/patches/<slide_id>.h5
-    ├── UNI_v2_10x_256/patches/<slide_id>.h5
-    └── UNI_v2_20x_256/patches/<slide_id>.h5
-```
-
-Its required CSV columns are:
-
-```text
-slide_id,image_path,label,label_name,patient_id,center,official_cohort
-```
-
-Every `image_path` is relative to `CUSTOM_DATASET/`; optional tissue-mask,
-tumor-mask, and annotation paths may be added in dedicated columns. Use
-`official_cohort=development`, `test`, or `test_unlabeled`. A label is `0` or
-`1` and may be blank only for `test_unlabeled`. Populate `patient_id` for every
-related slide so the generated split can prevent patient leakage.
-
-See [the data-format guide](docs/DATA_FORMAT.md) for the exact native directory
-trees, split policies, and generic `metadata.csv` contract.
-
-## Commands
+The main stage commands are:
 
 ```bash
-wsi-lab validate --config configs/camelyon16.yaml
-wsi-lab preprocess --config configs/camelyon16.yaml
-wsi-lab train-belief --config configs/camelyon16.yaml
-wsi-lab eval-belief --config configs/camelyon16.yaml --split val
-wsi-lab train-rl --config configs/camelyon16.yaml
-wsi-lab eval-rl --config configs/camelyon16.yaml --split val
-wsi-lab prepare-test --config configs/camelyon16.yaml --allow-test
-wsi-lab eval-rl --config configs/camelyon16.yaml --split test --allow-test
-wsi-lab eval-baselines --config configs/camelyon16.yaml --split test --allow-test
-wsi-lab manual-play --config configs/camelyon16.yaml --split val
-wsi-lab render-trajectory --config configs/camelyon16.yaml --trajectory trajectory.json
-wsi-lab benchmark-env --config configs/camelyon16.yaml
-wsi-lab smoke-test --config configs/camelyon16.yaml
+CONFIG=configs/camelyon16.yaml
+
+wsi-lab validate --config "${CONFIG}"
+wsi-lab preprocess --config "${CONFIG}"
+wsi-lab train-belief --config "${CONFIG}"
+wsi-lab eval-belief --config "${CONFIG}" --split val
+wsi-lab train-rl --config "${CONFIG}" --no-final-test-eval
+wsi-lab eval-rl --config "${CONFIG}" --split val
 ```
 
-The complete idempotent workflow is:
+The idempotent **training workflow** runs split construction, development-only
+embedding validation, tissue/navigation preprocessing, belief training, and
+PPO training:
 
 ```bash
-wsi-lab run --config configs/camelyon16.yaml
+wsi-lab run --config "${CONFIG}" --no-final-test-eval
 ```
 
-`train-rl` and `run` perform one guarded official-test reporting operation
-after the pipeline completes. This final report is enabled by default and
-evaluates both the best-validation checkpoint and the newest compatible regular
-checkpoint. Disable it when the official test set must remain unopened, or
-while doing exploratory runs:
+It does not replace the separate full-inventory `validate` command. Inspect
+stage decisions without writing, preprocessing, training, or test evaluation:
 
 ```bash
-wsi-lab train-rl --config configs/camelyon16.yaml --no-final-test-eval
-wsi-lab run --config configs/camelyon16.yaml --no-final-test-eval
+wsi-lab run --config "${CONFIG}" --dry-run
 ```
 
-The explicit `--final-test-eval` form is also accepted. A dry run never starts
-the final evaluation.
+Stages use content fingerprints and completion manifests. Compatible complete
+work is skipped, stale artifacts are rebuilt, and compatible incomplete
+training checkpoints resume. Generated state is written beneath the configured
+`workspace.root` and is intentionally excluded from the source archive.
 
-Inspect its stage decisions without writing, preprocessing, or training:
+### Official-test access
+
+The access behavior is deliberately explicit:
+
+- `wsi-lab validate` is a full dataset-integrity command. It checks every
+  adapter record, including official-test WSI and embedding files, but does not
+  train a model or compute test metrics.
+- Preprocessing and model-training stages use only the persisted train and
+  validation partitions. Training and calibration APIs reject test records.
+- Standalone `eval-belief`, `eval-rl`, and `eval-baselines` default to `val`.
+  Direct test evaluation requires both `--split test` and `--allow-test`.
+- `train-rl` and `run` perform a separate guarded final test evaluation by
+  default after PPO training. Use `--no-final-test-eval`, as above, whenever
+  the test cohort must remain unopened during exploratory development. A dry
+  run never performs final evaluation.
+
+An authorized test workflow can prepare an immutable cache once and require it
+from later evaluators:
 
 ```bash
-wsi-lab run --config configs/camelyon16.yaml --dry-run
+wsi-lab prepare-test --config "${CONFIG}" --allow-test
+wsi-lab eval-rl \
+  --config "${CONFIG}" \
+  --split test \
+  --allow-test \
+  --test-artifacts require
 ```
 
-Each stage has a content fingerprint and completion manifest. Compatible complete work is skipped, stale artifacts are rebuilt, and compatible incomplete training checkpoints resume.
+Test artifacts and metrics never become training dependencies or affect
+validation checkpoint selection. See [configuration](docs/CONFIGURATION.md)
+for cache coordination and checkpoint-selection semantics.
 
-RL outputs live under
-`workspace/runs/rl/<ppo-fingerprint>/` (or the configured workspace root):
+### Navigation baselines
 
-- `tensorboard/` records PPO losses, `training/episode_return`,
-  `training/episode_length`, cumulative `training/completed_episodes`, and
-  `training/learning_rate`, plus `validation/*`,
-  `test/best_validation/*`, and `test/latest/*` metrics;
-- `manifest.json` records the final global step, update and completed-episode
-  counts, last PPO metrics, dependencies, and best-validation selection;
-- `validation_<global-step>.json` contains aggregate and per-slide validation
-  results together with the checkpoint-selection decision;
-- `checkpoints/best_validation.pt` is the validation winner and
-  `checkpoints/best_validation.json` is its selection record;
-- `evaluation_ppo_test.json` contains separate `best_validation` and `latest`
-  aggregate/per-slide results. Each completed checkpoint keeps PPO diagnosis-head
-  and shared trajectory results in `metrics`, and adds
-  `ppo_patches_belief_metrics`, which scores the calibrated final belief at a
-  `0.5` threshold on the patches selected by PPO. The latter also reports NLL,
-  Brier score, ECE, confusion counts, and a counterfactual terminal-diagnosis
-  return. Each entry records its resolved checkpoint provenance.
-
-Validation prefers the highest finite AUROC. Accuracy is used only until a
-finite AUROC is available, and an exact tie keeps the earlier checkpoint. Test
-evaluation always treats that winner and the newest compatible regular
-checkpoint as independent roles. If no validation winner exists, its report is
-marked unavailable while the latest checkpoint is still evaluated. Test results
-never select a checkpoint or feed back into training.
-
-Standalone `eval-rl --split test --allow-test` uses the same two-checkpoint
-report and can evaluate checkpoints from an interrupted training experiment;
-PPO manifest completion is not required. When `--config` points to a saved
-`<run>/config.yaml`, that run is recognized automatically. Use `--run-dir RUN`
-to select it explicitly when needed.
-
-Authorized test navigation artifacts are an immutable, fingerprinted
-evaluation cache and never become a training dependency. The command
-`wsi-lab prepare-test --config CONFIG --allow-test` materializes that cache
-once. For concurrent cluster evaluation,
-submit one preparation job and make the evaluator array depend on its successful
-completion, then pass `--test-artifacts require` to each `eval-rl` or
-`eval-baselines` job. `require` is read-only and fails if the exact cache is not
-ready. The default `--test-artifacts auto` preserves the single-evaluator
-workflow: a completed cache is reused after read-only compatibility checks,
-while a missing cache is built by exactly one process under a
-fingerprint-scoped lock. Test environments lazily verify each loaded slide
-against the immutable index, so a replaced or stale slide generation fails
-closed instead of being evaluated silently.
-
-`eval-baselines` evaluates the frozen calibrated belief model with random and
-serpentine-raster navigation; it never loads a PPO checkpoint. Its default
-comparison uses symmetric confidence thresholds `0.5` and `0.9` after at
-least 32 unique evidence patches, with a 500-total-action cap, and fixed
-navigation-step budgets `1 4 8 16 32 64 128 256 500`. A step budget `K`
-records the belief after exactly `K` navigation actions and then applies one
-additional diagnosis action, so its total episode length is `K + 1`. Zooms and
-revisits count as navigation steps; the report separately records how many
-unique evidence patches those steps produced. The random seed defaults to
-`rl.seed` from the selected config.
-
-All conditions for both navigators are written to one atomic report beside the
-shared belief checkpoint as
-`evaluation_<split>_navigation_baseline_sweep.json`. Use `--output PATH` to
-select another report path. Provenance includes the calibrated checkpoint path
-and SHA-256, temperature, dependency and architecture payloads, verified split
-label counts, authorized-test preprocessing fingerprint, and configured versus
-effective evaluation limits. The protocol can be reproduced or narrowed with
-`--navigators`, `--thresholds`, `--confidence-min-evidence`,
-`--step-budgets`, `--confidence-max-total-actions`, and `--random-seed`.
-Official-test use is guarded by the same explicit
-`--split test --allow-test` requirement as the other evaluators.
-
-View every run while it is training with:
+The reporting-only sweep compares random and serpentine-raster navigation
+against the same frozen calibrated belief model:
 
 ```bash
+wsi-lab eval-baselines --config "${CONFIG}" --split val
+```
+
+Defaults include symmetric confidence thresholds `0.5` and `0.9` after at
+least 32 unique evidence patches, and fixed navigation-action targets
+`1 4 8 16 32 64 128 256 500`. A target `K` represents `K` navigation actions
+followed by one diagnosis action; zooms and revisits count, while unique
+evidence is reported separately. If a navigator or environment exhausts its
+route before `K`, that endpoint is marked unattained/censored rather than
+reported as an exact-`K` observation. Strict fixed-budget metrics are withheld
+unless every slide attains the target.
+
+Other useful interfaces include:
+
+```bash
+wsi-lab manual-play --config "${CONFIG}" --split val
+wsi-lab render-trajectory --config "${CONFIG}" --trajectory trajectory.json
+wsi-lab benchmark-env --config "${CONFIG}"
 tensorboard --logdir workspace/runs/rl
 ```
 
-W&B can record the same belief, PPO, validation, and automatic final-test
-scalars without uploading models or datasets. It remains disabled by default:
+See [manual play](docs/MANUAL_PLAY.md) for keyboard controls and observation
+inspection. PPO checkpoints, validation decisions, dependency manifests, and
+aggregate/per-slide evaluations are stored under the fingerprinted run and
+model directories in `workspace/`.
 
-```yaml
-logging:
-  tensorboard: true
-  wandb: true
-  wandb_project: wsi-lab
-  wandb_entity: null
-  wandb_mode: online
-  wandb_tags: [camelyon16]
+## Reproducing the efficiency comparisons
+
+`exp_reprod/` is the workshop reproduction package for
+two HistoGym comparisons:
+
+- `exp_reprod/environment_only/` measures native
+  environment execution without policy or belief-model inference.
+- `exp_reprod/agent_integrated/` measures
+  native-observation recurrent-PPO interaction and optimization, including
+  WSI Lab's frozen belief inference.
+
+Both protocols use the same deterministic 100-slide CAMELYON16 cohort, 10,000
+episodes, and 100 actions/interactions per episode. They contain protocol
+templates, environments, setup and validation scripts, benchmark harnesses,
+and analysis code, but no measured outputs or datasets.
+
+The reproduction workflows are designed to run directly from the extracted
+workshop source tree; they do not require `.git/` history or a WSI Lab Git
+worktree. Setup verifies the submitted WSI Lab source snapshot by checksum and
+retrieves HistoGym at its recorded revision. Before starting either long run:
+
+```bash
+cd exp_reprod
+python scripts/privacy_check.py
+bash verify_all.sh
 ```
 
-Set `wandb_mode: offline` on disconnected compute nodes, preserve the generated
-`wandb/` directory inside the model/run artifact directory, and upload it later
-with `wandb sync PATH`. Belief training, PPO training, and automatic final-test
-reporting use separate W&B runs; the PPO pair shares a fingerprint-based group.
-Enabling W&B does not change artifact fingerprints or retroactively publish a
-stage that the idempotent pipeline skips.
+Then follow the selected experiment README. Both experiments require Linux,
+Conda, a CUDA-capable device, CAMELYON16, and the four UNI-v2 embedding
+collections. The agent-integrated experiment uses the bundled calibrated
+checkpoint. Full measured runs are intentionally expensive; run package,
+configuration, and input validation before beginning them.
 
-Use [manual play](docs/MANUAL_PLAY.md) to control the production environment
-with the keyboard while viewing the exact actor observations, scalar values,
-action mask, and rewards.
+## Design summary
 
-## Core invariant
+Navigation is bounded by one box enclosing the union of tissue islands. The
+box is represented in level-0 slide coordinates and snapped outward on a
+global 0.625x grid, preserving slide origin and quadtree alignment across all
+six levels. Cached tissue-valid maps define navigability; sparse embeddings are
+attributes of some 2.5x, 5x, 10x, and 20x cells and never define the tissue ROI
+or graph.
 
-Navigation is bounded by one box enclosing the union of all tissue islands. The
-box is represented in level-0 slide coordinates and expanded outward on the
-global 0.625× grid, so every finer level retains the original slide origin and
-exact quadtree alignment. Cached `tissue_valid` maps define the navigation
-graph: pans select the nearest tissue-valid cell in the requested direction,
-possibly jumping across background, and zoom-in actions expose only
-tissue-valid children.
+The actor receives a five-channel ROI-wide image, a current viewport, and
+`[magnification, remaining_budget, belief, roi_x, roi_y]`. Optional dihedral
+spatial and mild H&E color augmentation keeps observations and actions aligned
+while leaving canonical cell IDs and embeddings unchanged. Augmentation is
+disabled during validation and testing.
 
-Embeddings remain sparse attributes on some 2.5×, 5×, 10×, and 20× cells; they
-never define the tissue ROI or graph. A tissue-valid cell with no embedding is
-still navigable and produces RGB, visits, and normal action cost, but contributes
-no diagnostic evidence.
+See [design and invariants](docs/DESIGN.md) for geometry, observations, action
+semantics, reward, belief integration, recurrent PPO, and artifact contracts.
 
-That same snapped box is the spatial extent of every actor-wide observation.
-Overview RGB is cropped to it, and the current-location and visit channels are
-projected into its coordinate frame before the five-channel image is resized.
-The scalar vector is `[magnification, remaining_budget, belief, roi_x, roi_y]`,
-where x/y are the current cell center normalized between the nominal snapped
-tissue-ROI edges. The current viewport still reads the selected global WSI
-cell. Navigation IDs, global patch coordinates, and embedding lookups are never
-shifted or reinterpreted by the observation crop.
+## Repository map
 
-PPO training can optionally sample one of eight rotated/flipped virtual slide
-frames and/or one mild H&E color transform per episode. Spatial channels,
-reported coordinates, pan directions, and zoom quadrants remain aligned from
-the agent's perspective, while canonical cell IDs and embedding rows remain
-unchanged. These runtime transforms reuse the existing preprocessing and raw
-RGB caches and are disabled for validation and testing.
+| Path | Purpose |
+| --- | --- |
+| `src/wsi_lab/` | Library, CLI, adapters, preprocessing, environment, belief model, baselines, and PPO |
+| `configs/` | Portable strict-YAML experiment configurations |
+| `tests/` | Unit, integration, synthetic, and explicitly marked real-data tests |
+| `docs/` | Installation, configuration, data-format, design, manual-play, and third-party references |
+| `exp_reprod/` | ZIP-compatible HistoGym efficiency reproduction package |
+| `environment.yml` | Reference Linux/Python/CUDA environment |
+| `pyproject.toml` | Python package metadata, dependencies, entry points, and tool configuration |
+
+## Citation
+
+Citation metadata is intentionally withheld for double-blind review and will
+be added to the public release after peer review.
 
 ## License
 
-Except for third-party components and materials identified separately, WSI Lab
-is licensed under the [Apache License 2.0](LICENSE). Third-party terms are
-summarized in [THIRD_PARTY.md](docs/THIRD_PARTY.md).
+Except for separately identified third-party components and materials, WSI Lab
+is licensed under the [Apache License 2.0](LICENSE). See
+[THIRD_PARTY.md](docs/THIRD_PARTY.md) for dependency and model-asset terms.

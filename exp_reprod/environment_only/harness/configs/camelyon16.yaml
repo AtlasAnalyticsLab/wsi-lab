@@ -29,7 +29,6 @@ tissue:
     executable: atlaspatch
     device: cuda:0
     segmentation_batch_size: 1
-    keep_overlay: false
     timeout_seconds: 7200
 
 environment:
@@ -96,7 +95,6 @@ rl:
   vector_backend: sync
   device: cuda:0
   belief_device: cpu
-  evaluation_episodes: 54
 
 logging:
   tensorboard: true

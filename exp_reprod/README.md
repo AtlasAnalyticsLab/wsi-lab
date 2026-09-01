@@ -18,17 +18,22 @@ by HistoGym.
 ## What is and is not included
 
 The package includes the benchmark harness, protocol templates, cohort
-identity, pinned source revisions, software environments, setup/configuration
+identity, pinned source identities, software environments, setup/configuration
 scripts, fail-fast validation, measured-run wrappers, and analysis scripts.
-Keep this directory inside a Git clone of WSI-Lab: setup creates a detached
-worktree at the pinned source revision without changing the active checkout.
+Keep this directory in the extracted WSI-Lab source tree. Setup installs that
+submitted source tree directly and verifies its executable Python files using
+`provenance/wsi_lab_source.sha256`; WSI-Lab Git history is not required. The
+external HistoGym source is still cloned and checked out at its pinned commit.
 
 The following licensed or externally managed inputs are not redistributed:
 
 - CAMELYON16 images and XML annotations;
 - the four required UNI-v2 HDF5 embedding collections;
-- model assets downloaded by AtlasPatch/SAM2;
-- the frozen calibrated belief checkpoint used by the agent-integrated run.
+- model assets downloaded by AtlasPatch/SAM2.
+
+The frozen calibrated belief checkpoint used by the agent-integrated run is
+included and bound by its published SHA-256 identity. CAMELYON16 and UNI-v2
+embeddings remain external inputs.
 
 The experiment READMEs describe the required layout and integrity checks.
 

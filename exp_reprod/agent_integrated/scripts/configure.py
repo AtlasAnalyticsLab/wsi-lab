@@ -38,7 +38,12 @@ def write_json(path: Path, value: Any) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-root", type=Path, required=True)
-    parser.add_argument("--belief-checkpoint", type=Path, required=True)
+    parser.add_argument(
+        "--belief-checkpoint",
+        type=Path,
+        default=EXP_ROOT / "models/calibrated_checkpoint.pt",
+        help="frozen calibrated checkpoint (defaults to the bundled checkpoint)",
+    )
     parser.add_argument(
         "--device",
         required=True,

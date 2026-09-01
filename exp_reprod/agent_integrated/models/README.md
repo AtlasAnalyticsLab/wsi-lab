@@ -1,8 +1,8 @@
 # Required frozen belief checkpoint
 
-The agent-integrated WSI-Lab run requires the calibrated frozen ABMIL belief
+The included `calibrated_checkpoint.pt` is the calibrated frozen ABMIL belief
 checkpoint used by the measured experiment. It is not trained or updated by
-this benchmark.
+this benchmark and is distributed under the repository's Apache-2.0 license.
 
 Measured checkpoint metadata:
 
@@ -13,5 +13,6 @@ Measured checkpoint metadata:
 - hidden dimension: 512
 - attention dimension: 256
 
-Pass its local path to `scripts/configure.py --belief-checkpoint`. The
-configuration step refuses a file with a different hash or size.
+`scripts/configure.py` uses this file by default. An explicit replacement can
+be supplied with `--belief-checkpoint`; configuration refuses a file with a
+different hash or size.

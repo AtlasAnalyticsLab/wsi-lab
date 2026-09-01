@@ -2,8 +2,9 @@
 set -euo pipefail
 
 readonly EXP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly REPO_ROOT="$(cd "${EXP_ROOT}/../.." && pwd)"
 readonly HARNESS_ROOT="${EXP_ROOT}/harness"
-readonly WSI_SOURCE_ROOT="${EXP_ROOT}/runtime/wsi-lab-source"
+readonly WSI_SOURCE_ROOT="${REPO_ROOT}"
 readonly PYTHON="${EXP_ROOT}/runtime/unified-env/bin/python"
 readonly OUTPUT_DIR="${EXP_ROOT}/analysis_outputs/native_observation_ppo_10k"
 

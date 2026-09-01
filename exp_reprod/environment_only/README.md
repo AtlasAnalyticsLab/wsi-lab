@@ -15,10 +15,12 @@ action priorities. The priority sequence is deterministically shuffled using
 seed `1 + episode_index`; unavailable classes are postponed. The package runs
 each backend once per invocation.
 
-Pinned source revisions:
+Pinned source identities:
 
-- WSI-Lab: `0deb7837364add790f9530c41f0ef0b5e616c05c`
-- HistoGym: `5b742760321d28a469d2ef9494e886a49d0aa7f7`
+- WSI-Lab: the submitted source snapshot verified by
+  `../provenance/wsi_lab_source.sha256`; the measured implementation was based
+  on revision `0deb7837364add790f9530c41f0ef0b5e616c05c`.
+- HistoGym: Git commit `5b742760321d28a469d2ef9494e886a49d0aa7f7`.
 
 The exact Python environments are in `environments/wsi_lab.yml` and
 `harness/benchmarks/histogym_comparison/histogym/environment.yml`.
@@ -72,10 +74,10 @@ bash scripts/verify_package.sh
 bash scripts/setup.sh
 ```
 
-Setup creates ignored state under `runtime/`, checks out WSI-Lab at the pinned
-revision, clones HistoGym at its pinned revision, and creates isolated Python
-3.11 and Python 3.8 environments. It does not edit the repository's WSI-Lab
-training or library files.
+Setup verifies and installs the extracted WSI-Lab source tree, clones HistoGym
+at its pinned revision, and creates isolated Python 3.11 and Python 3.8
+environments under ignored `runtime/`. It does not edit WSI-Lab training or
+library files and does not require WSI-Lab Git history.
 
 ## 2. Configure the local inputs
 
@@ -96,9 +98,9 @@ fails if the cohort identity differs.
 bash scripts/validate.sh
 ```
 
-Validation checks both source revisions, both environments, the 100-slide
-cohort, all external inputs, and the 10,000-by-100 action plan without running
-an episode.
+Validation checks the submitted WSI-Lab source identity, the HistoGym revision,
+both environments, the 100-slide cohort, all external inputs, and the
+10,000-by-100 action plan without running an episode.
 
 ## 4. Run the two measured blocks
 
