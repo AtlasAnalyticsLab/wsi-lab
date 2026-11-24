@@ -15,11 +15,11 @@ action priorities. The priority sequence is deterministically shuffled using
 seed `1 + episode_index`; unavailable classes are postponed. The package runs
 each backend once per invocation.
 
-Pinned source identities:
+Source selection:
 
-- WSI-Lab: the submitted source snapshot verified by
-  `../provenance/wsi_lab_source.sha256`; the measured implementation was based
-  on revision `0deb7837364add790f9530c41f0ef0b5e616c05c`.
+- WSI-Lab: the local repository selected by `WSI_LAB_SOURCE_ROOT`. The measured
+  implementation was based on revision
+  `0deb7837364add790f9530c41f0ef0b5e616c05c`.
 - HistoGym: Git commit `5b742760321d28a469d2ef9494e886a49d0aa7f7`.
 
 The exact Python environments are in `environments/wsi_lab.yml` and
@@ -65,19 +65,20 @@ UNI-v2 generation is outside the timed experiment. The HDF5 files are needed
 to build fresh WSI-Lab navigation artifacts but are not read during online
 interaction.
 
-## 1. Verify and create the environments
+## 1. Create the environments
 
-Keep this package beside the matching `wsi-lab/` source directory and run from
-this experiment directory. If the source is elsewhere, set
-`WSI_LAB_SOURCE_ROOT` to its absolute path before running these scripts:
+Start from the WSI-Lab repository root, select its source tree, and enter this
+experiment directory:
 
 ```bash
-bash scripts/verify_package.sh
+export WSI_LAB_SOURCE_ROOT="$(pwd)"
+cd exp_reprod/environment_only
 bash scripts/setup.sh
 ```
 
-Setup verifies and installs the extracted WSI-Lab source tree, clones HistoGym
-at its pinned revision, and creates isolated Python 3.11 and Python 3.8
+Run the remaining commands from this experiment directory, keeping
+`WSI_LAB_SOURCE_ROOT` exported. Setup installs the selected WSI-Lab source tree,
+clones HistoGym at its pinned revision, and creates isolated Python 3.11 and Python 3.8
 environments under ignored `runtime/`. It does not edit WSI-Lab training or
 library files and does not require WSI-Lab Git history.
 
@@ -100,9 +101,9 @@ fails if the cohort identity differs.
 bash scripts/validate.sh
 ```
 
-Validation checks the submitted WSI-Lab source identity, the HistoGym revision,
-both environments, the 100-slide cohort, all external inputs, and the
-10,000-by-100 action plan without running an episode.
+Validation checks the HistoGym revision, both environments, the 100-slide
+cohort, all external inputs, and the 10,000-by-100 action plan without running
+an episode.
 
 ## 4. Run the two measured blocks
 

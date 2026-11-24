@@ -19,8 +19,6 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 mkdir -p "${RUNTIME_ROOT}"
-python3 "${EXP_ROOT}/../scripts/verify_wsi_source.py" \
-  --repository-root "${REPO_ROOT}"
 
 if [[ ! -d "${HISTOGYM_ROOT}/.git" ]]; then
   mkdir -p "$(dirname "${HISTOGYM_ROOT}")"

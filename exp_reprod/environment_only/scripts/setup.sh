@@ -18,8 +18,6 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 mkdir -p "${RUNTIME_ROOT}"
-python3 "${EXP_ROOT}/../scripts/verify_wsi_source.py" \
-  --repository-root "${REPO_ROOT}"
 
 if [[ ! -x "${WSI_ENV_PREFIX}/bin/python" ]]; then
   conda env create --prefix "${WSI_ENV_PREFIX}" --file "${EXP_ROOT}/environments/wsi_lab.yml"

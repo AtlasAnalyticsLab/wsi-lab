@@ -17,7 +17,6 @@ import importlib.metadata
 import json
 import os
 import platform
-import subprocess
 import sys
 import time
 import traceback
@@ -61,16 +60,12 @@ from benchmarks.histogym_comparison.wsi.scheduler import (
 MODULE_STARTED_NS = time.perf_counter_ns()
 PROCESS_CREATED_EPOCH_NS = int(psutil.Process(os.getpid()).create_time() * 1e9)
 HARNESS_REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-REPOSITORY_ROOT = Path(
-    os.environ.get("WSI_LAB_SOURCE_ROOT", HARNESS_REPOSITORY_ROOT.parents[2] / "wsi-lab")
-).expanduser().resolve()
 DEFAULT_MANIFEST = (
     HARNESS_REPOSITORY_ROOT / "benchmarks/histogym_comparison/manifests/cohort.json"
 )
 DEFAULT_CONFIG = HARNESS_REPOSITORY_ROOT / "configs/camelyon16.yaml"
 EXPECTED_OBSERVATION_BYTES_224 = (5 * 224 * 224 + 3 * 224 * 224 + 5) * 4
 RESULT_SCHEMA_VERSION = 1
-WSI_LAB_SOURCE_VERIFIER = Path(__file__).resolve().parents[5] / "scripts/verify_wsi_source.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,29 +131,6 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _verify_source_identity() -> dict[str, Any]:
-    try:
-        verification = subprocess.run(
-            [
-                sys.executable,
-                str(WSI_LAB_SOURCE_VERIFIER),
-                "--repository-root",
-                str(REPOSITORY_ROOT),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        detail = getattr(exc, "stderr", None) or str(exc)
-        raise RuntimeError(f"cannot verify submitted WSI-Lab source: {detail}") from exc
-    try:
-        return dict(json.loads(verification.stdout))
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError("WSI-Lab source verifier returned invalid JSON") from exc
-
-
 def _versions() -> dict[str, str | None]:
     result: dict[str, str | None] = {"python": platform.python_version()}
     for distribution in (
@@ -179,7 +151,6 @@ def _versions() -> dict[str, str | None]:
 def _provenance(config_path: Path, selection: CohortSelection) -> dict[str, Any]:
     return {
         "created_at_utc": _now(),
-        "source_identity_check": _verify_source_identity(),
         "config_sha256": sha256_file(config_path),
         "cohort": selection.to_dict(),
         "versions": _versions(),
@@ -603,7 +574,6 @@ def _run_navigation_artifact_stage(
 
 def run_prepare(args: argparse.Namespace) -> dict[str, Any]:
     operation_started = time.perf_counter_ns()
-    _verify_source_identity()
     if not args.device.startswith("cuda:"):
         raise ValueError("AtlasPatch requires an explicit CUDA device")
     if int(args.device.split(":", 1)[1]) != args.gpu_index:
@@ -1220,7 +1190,6 @@ def _online_aggregate(
 
 def run_online(args: argparse.Namespace) -> dict[str, Any]:
     operation_started = time.perf_counter_ns()
-    _verify_source_identity()
     config_path = Path(args.config).expanduser().resolve()
     selection = load_cohort(args.manifest, cohort=args.cohort, limit=args.limit)
     config, adapter = _load_native_context(config_path, selection)
@@ -1344,7 +1313,6 @@ def run_online(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def run_validate(args: argparse.Namespace) -> dict[str, Any]:
-    _verify_source_identity()
     config_path = Path(args.config).expanduser().resolve()
     selection = load_cohort(args.manifest, cohort=args.cohort, limit=args.limit)
     config, adapter = _load_native_context(config_path, selection)

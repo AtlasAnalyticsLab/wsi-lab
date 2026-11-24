@@ -19,11 +19,11 @@ embedding lookup, and a frozen calibrated ABMIL belief model. The belief model
 is called but never optimized; UNI-v2 generation is not part of the run.
 WSI-Lab diagnosis actions and HistoGym's stay action are masked.
 
-Pinned source identities:
+Source selection:
 
-- WSI-Lab: the submitted source snapshot verified by
-  `../provenance/wsi_lab_source.sha256`; the measured implementation was based
-  on revision `0deb7837364add790f9530c41f0ef0b5e616c05c`.
+- WSI-Lab: the local repository selected by `WSI_LAB_SOURCE_ROOT`. The measured
+  implementation was based on revision
+  `0deb7837364add790f9530c41f0ef0b5e616c05c`.
 - HistoGym: Git commit `5b742760321d28a469d2ef9494e886a49d0aa7f7`.
 
 The exact Python/PyTorch environment is in `environments/environment.yml`.
@@ -63,19 +63,20 @@ The configuration step validates the dataset cohort and the checkpoint hash
 and size. The embedding collections are required precomputed inputs; their
 generation is deliberately outside the timed comparison.
 
-## 1. Verify and create the unified environment
+## 1. Create the unified environment
 
-Keep this package beside the matching `wsi-lab/` source directory and run from
-this experiment directory. If the source is elsewhere, set
-`WSI_LAB_SOURCE_ROOT` to its absolute path before running these scripts:
+Start from the WSI-Lab repository root, select its source tree, and enter this
+experiment directory:
 
 ```bash
-bash scripts/verify_package.sh
+export WSI_LAB_SOURCE_ROOT="$(pwd)"
+cd exp_reprod/agent_integrated
 bash scripts/setup.sh
 ```
 
-Setup verifies and installs the extracted WSI-Lab source tree, clones the
-pinned HistoGym revision, and creates one shared Python/PyTorch environment
+Run the remaining commands from this experiment directory, keeping
+`WSI_LAB_SOURCE_ROOT` exported. Setup installs the selected WSI-Lab source tree,
+clones the pinned HistoGym revision, and creates one shared Python/PyTorch environment
 under ignored `runtime/`. A narrow in-process Gym-to-Gymnasium alias allows
 both native backends to use the identical PPO implementation without editing
 HistoGym. WSI-Lab Git history is not required, and its source files are not
@@ -99,10 +100,9 @@ checkpoint by hash, and records the selected CUDA device.
 bash scripts/validate.sh
 ```
 
-Validation checks the submitted WSI-Lab source identity, the HistoGym revision,
-workload size, input identities, policy parameter counts, and bit-identical
-initialization of the shared viewport CNN, GRU, and critic. It does not open a
-WSI or run an episode.
+Validation checks the HistoGym revision, workload size, input identities,
+policy parameter counts, and bit-identical initialization of the shared
+viewport CNN, GRU, and critic. It does not open a WSI or run an episode.
 
 ## 4. Run the two measured blocks
 

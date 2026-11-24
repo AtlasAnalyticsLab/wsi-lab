@@ -97,9 +97,11 @@ WSI Lab consumes existing UNI-v2 embeddings in the AtlasPatch HDF5 schema; it
 does not generate those embeddings. The expected layouts and keys are defined
 in the [data-format guide](docs/DATA_FORMAT.md).
 
-Pretrained belief checkpoints are not bundled with this repository. Train a
-belief model using `wsi-lab train-belief` before running workflows that require
-one, as described below.
+The frozen calibrated belief checkpoint for the agent-integrated efficiency
+experiment is included at
+`exp_reprod/agent_integrated/models/calibrated_checkpoint.pt`; see its
+[model notes](exp_reprod/agent_integrated/models/README.md). For workflows on
+other data, train a belief model using `wsi-lab train-belief`, as described below.
 
 WSI Lab's own code is Apache-2.0, but the pinned AtlasPatch 1.1.0 dependency is
 identified upstream as CC BY-NC-SA 4.0. WSI Lab's license does not replace
@@ -273,16 +275,14 @@ cohort, 10,000 episodes, and 100 actions/interactions per episode. They include
 protocol templates, environments, setup and validation scripts, benchmark
 harnesses, and analysis code, but no measured outputs or datasets.
 
-Setup verifies the WSI Lab source snapshot by checksum and retrieves HistoGym
-at its recorded revision; WSI Lab Git history is not required. From the
-repository root, select this checkout as the source and check the package
-before starting either efficiency run:
+The efficiency setup installs the selected local WSI Lab source tree and
+retrieves HistoGym at its recorded revision; WSI Lab Git history is not
+required. From the repository root, select this checkout as the source and run
+the package privacy check before starting either efficiency experiment:
 
 ```bash
 export WSI_LAB_SOURCE_ROOT="$(pwd)"
-cd exp_reprod
-python scripts/privacy_check.py
-bash verify_all.sh
+python exp_reprod/scripts/privacy_check.py
 ```
 
 Then follow the selected experiment README. Both efficiency experiments require
@@ -318,6 +318,7 @@ semantics, reward, belief integration, recurrent PPO, and artifact contracts.
 | `configs/` | Portable strict-YAML experiment configurations |
 | `tests/` | Unit, integration, synthetic, and explicitly marked real-data tests |
 | `docs/` | Installation, configuration, data-format, design, manual-play, and third-party references |
+| `exp_reprod/` | Efficiency comparisons and CAMELYON16 RL ablation reproduction materials |
 | `environment.yml` | Reference Linux/Python/CUDA environment |
 | `pyproject.toml` | Python package metadata, dependencies, entry points, and tool configuration |
 

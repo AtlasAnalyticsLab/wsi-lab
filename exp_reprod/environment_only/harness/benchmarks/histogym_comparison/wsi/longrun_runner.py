@@ -59,7 +59,6 @@ from benchmarks.histogym_comparison.wsi.runner import (
     _load_native_context,
     _provenance,
     _verify_prepared_workspace,
-    _verify_source_identity,
 )
 from benchmarks.histogym_comparison.wsi.runner import run_prepare as run_legacy_prepare
 from benchmarks.histogym_comparison.wsi.scheduler import (
@@ -425,7 +424,6 @@ def _write_checkpoint_table(
 def run_online(args: argparse.Namespace) -> dict[str, Any]:
     operation_started = time.perf_counter_ns()
     process = psutil.Process(os.getpid())
-    _verify_source_identity()
     plan, selection = _load_plan_and_selection(args)
     config_path = Path(args.config).expanduser().resolve()
     native_context_cpu_started = time.process_time_ns()

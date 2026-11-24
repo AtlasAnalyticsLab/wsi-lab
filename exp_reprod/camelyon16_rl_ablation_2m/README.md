@@ -1,10 +1,11 @@
 # Reproducing the six-variant CAMELYON16 RL ablation
 
-This directory is a portable, training-only reproduction package for the
-six-variant CAMELYON16 study. Keep `exp_reprod/` beside the matching `wsi-lab/`
-source tree on a workstation or server. Git history and network access to the
-WSI-Lab repository are not required. The default launcher executes one process at a time;
-optional bounded parallelism is available with `--jobs`.
+This directory contains the training-only reproduction package for the
+six-variant CAMELYON16 study inside the WSI-Lab repository. Run the commands
+below from the repository root, which contains `pyproject.toml`. The ablation
+commands do not fetch WSI-Lab or require its Git history. The default launcher
+executes one process at a time; optional bounded parallelism is available with
+`--jobs`.
 
 The committed files contain experiment definitions and implementation code
 only. They contain no trained weights, measured metric values, plots, telemetry, run maps,
@@ -35,8 +36,8 @@ Each main run requests 2,000,000 environment transitions. PPO collects batches
 of `8 x 128 = 1,024` transitions, so a completed main run ends at the first
 batch boundary at or above the request. Checkpoints are written every 100,000
 requested transitions. The committed `study.json` is the authoritative matrix
-and protocol definition; configurations are generated only when the reviewer
-runs the launcher.
+and protocol definition; configurations are generated only when you run the
+launcher.
 
 This protocol intentionally does not perform PPO validation or official-test
 evaluation. Training telemetry and deterministic monitoring use the training
@@ -64,7 +65,7 @@ $CAMELYON16_ROOT/
 ```
 
 The HDF5 files must satisfy the schema documented in
-[DATA_FORMAT.md](../../wsi-lab/docs/DATA_FORMAT.md), including the `coords`,
+[DATA_FORMAT.md](../../docs/DATA_FORMAT.md), including the `coords`,
 `passports`, and `features/uni_v2` datasets and their geometry metadata.
 WSI-Lab consumes these embeddings but does not generate them. Consequently,
 the embeddings are an external data prerequisite rather than an omitted step
@@ -99,7 +100,7 @@ create and activate the reproduction environment:
 
 ```bash
 conda env create \
-  --file ../exp_reprod/camelyon16_rl_ablation_2m/environment.yml
+  --file exp_reprod/camelyon16_rl_ablation_2m/environment.yml
 conda activate wsi-lab-ablation
 ```
 
@@ -109,7 +110,7 @@ workstation or server and use packages from the listed public Conda channels
 and PyPI. The recorded protocol uses CUDA devices. A CUDA-capable GPU is
 strongly recommended for the full matrix. CPU execution is supported for
 portability and small checks but preprocessing and 36 full training runs will
-be very slow. See [INSTALLATION.md](../../wsi-lab/docs/INSTALLATION.md) for OpenSlide,
+be very slow. See [INSTALLATION.md](../../docs/INSTALLATION.md) for OpenSlide,
 AtlasPatch, CUDA, and CPU-environment details.
 
 ## 2. Select data, work, and source directories
@@ -118,9 +119,10 @@ Run the following from the `wsi-lab/` source root after setting
 `CAMELYON16_ROOT`:
 
 ```bash
+export WSI_LAB_SOURCE_ROOT="$PWD"
 DATA_ROOT="$CAMELYON16_ROOT"
 WORK_ROOT="$PWD/workspace/exp_reprod/camelyon16_rl_ablation_2m"
-SOURCE_ROOT="$PWD"
+SOURCE_ROOT="$WSI_LAB_SOURCE_ROOT"
 ```
 
 Install the selected source tree without re-solving the pinned dependencies:
@@ -130,7 +132,7 @@ python -m pip install --no-deps -e "$SOURCE_ROOT"
 ```
 
 The default `WORK_ROOT` is separated from the publication package and covered
-by the archive's generated-workspace ignore rule. Do not select a work
+by the repository's generated-workspace ignore rule. Do not select a work
 directory inside this reproduction package; the launcher rejects that choice.
 
 The recorded core implementation is identified in `study.json` by a reference
@@ -139,7 +141,7 @@ WSI-Lab source tree must contain those exact `src/wsi_lab` bytes; when running
 from its root, use `SOURCE_ROOT="$PWD"`. `doctor`, `prepare`, and `run` verify the file
 contents directly and never invoke Git or contact the WSI-Lab repository. If
 that checksum fails, restore the matching WSI-Lab source tree; combining this
-folder with a different source archive is intentionally rejected.
+folder with a different implementation is intentionally rejected.
 
 The environment contains the Git command only because pip uses it to fetch the
 public, commit-pinned SAM2 dependency. It is not used to fetch WSI-Lab.
@@ -162,7 +164,7 @@ across machines.
 Print the complete, deterministic 36-run matrix:
 
 ```bash
-python ../exp_reprod/camelyon16_rl_ablation_2m/reproduce.py list
+python exp_reprod/camelyon16_rl_ablation_2m/reproduce.py list
 ```
 
 Check the source tree, pinned software environment and AtlasPatch wrapper,
@@ -172,7 +174,7 @@ WSIs, all four embeddings per development slide, and the required tumor
 sidecars without creating experiment artifacts:
 
 ```bash
-python ../exp_reprod/camelyon16_rl_ablation_2m/reproduce.py doctor \
+python exp_reprod/camelyon16_rl_ablation_2m/reproduce.py doctor \
   --source-root "$SOURCE_ROOT" \
   --data-root "$DATA_ROOT" \
   --work-root "$WORK_ROOT"
@@ -181,7 +183,7 @@ python ../exp_reprod/camelyon16_rl_ablation_2m/reproduce.py doctor \
 Preview every preparation command without opening data or writing files:
 
 ```bash
-python ../exp_reprod/camelyon16_rl_ablation_2m/reproduce.py prepare \
+python exp_reprod/camelyon16_rl_ablation_2m/reproduce.py prepare \
   --source-root "$SOURCE_ROOT" \
   --data-root "$DATA_ROOT" \
   --work-root "$WORK_ROOT" \
@@ -196,7 +198,7 @@ the dataset to exist and never create the selected work directory.
 On a CUDA machine:
 
 ```bash
-python ../exp_reprod/camelyon16_rl_ablation_2m/reproduce.py prepare \
+python exp_reprod/camelyon16_rl_ablation_2m/reproduce.py prepare \
   --source-root "$SOURCE_ROOT" \
   --data-root "$DATA_ROOT" \
   --work-root "$WORK_ROOT"
@@ -205,7 +207,7 @@ python ../exp_reprod/camelyon16_rl_ablation_2m/reproduce.py prepare \
 For CPU-only execution, make every prerequisite device explicit:
 
 ```bash
-python ../exp_reprod/camelyon16_rl_ablation_2m/reproduce.py prepare \
+python exp_reprod/camelyon16_rl_ablation_2m/reproduce.py prepare \
   --source-root "$SOURCE_ROOT" \
   --data-root "$DATA_ROOT" \
   --work-root "$WORK_ROOT" \
@@ -231,7 +233,7 @@ The smoke study exercises each variant once for 1,024 transitions while
 retaining the real 500-action episode horizon:
 
 ```bash
-python ../exp_reprod/camelyon16_rl_ablation_2m/reproduce.py smoke \
+python exp_reprod/camelyon16_rl_ablation_2m/reproduce.py smoke \
   --source-root "$SOURCE_ROOT" \
   --data-root "$DATA_ROOT" \
   --work-root "$WORK_ROOT" \
@@ -246,7 +248,7 @@ upstream fingerprint changes.
 ## 6. Run the full 36-cell study
 
 ```bash
-python ../exp_reprod/camelyon16_rl_ablation_2m/reproduce.py run \
+python exp_reprod/camelyon16_rl_ablation_2m/reproduce.py run \
   --source-root "$SOURCE_ROOT" \
   --data-root "$DATA_ROOT" \
   --work-root "$WORK_ROOT" \
@@ -264,7 +266,7 @@ bind artifact paths, so independently rooted outputs are not relocatable or
 mergeable by `summarize.py`. Canonical matrix indices and run IDs do not change:
 
 ```bash
-python ../exp_reprod/camelyon16_rl_ablation_2m/reproduce.py run \
+python exp_reprod/camelyon16_rl_ablation_2m/reproduce.py run \
   --source-root "$SOURCE_ROOT" \
   --data-root "$DATA_ROOT" \
   --work-root "$WORK_ROOT" \
@@ -284,7 +286,7 @@ invocation.
 Inspect completion state without modifying it:
 
 ```bash
-python ../exp_reprod/camelyon16_rl_ablation_2m/reproduce.py status \
+python exp_reprod/camelyon16_rl_ablation_2m/reproduce.py status \
   --work-root "$WORK_ROOT"
 ```
 
@@ -293,7 +295,7 @@ stream, monitoring milestone, and matrix identity, then aggregate episode
 telemetry:
 
 ```bash
-python ../exp_reprod/camelyon16_rl_ablation_2m/summarize.py \
+python exp_reprod/camelyon16_rl_ablation_2m/summarize.py \
   --source-root "$SOURCE_ROOT" \
   --work-root "$WORK_ROOT" \
   --mode main
@@ -301,7 +303,7 @@ python ../exp_reprod/camelyon16_rl_ablation_2m/summarize.py \
 
 The generated summary is written beneath `$WORK_ROOT/summaries/`. No expected
 metric values are embedded in this repository; the summary contains only
-measurements produced by the reviewer's run.
+measurements produced by your run.
 
 The work directory has this shape:
 
@@ -331,13 +333,12 @@ W&B is disabled in the recorded configuration.
 
 The package includes a read-only audit that rejects private machine paths,
 credentials, generated artifacts, prior-run metadata, symlinks, and unexpected
-binary or large files. When Git metadata is present during authoring it also
-rejects ignored publication files; that check is safely skipped in an
-extracted source ZIP:
+binary or large files. When Git metadata is present, it also rejects ignored
+publication files; that check is skipped when Git metadata is unavailable:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 \
-python -B ../exp_reprod/camelyon16_rl_ablation_2m/audit.py
+python -B exp_reprod/camelyon16_rl_ablation_2m/audit.py
 ```
 
 After installing the project dependencies, run the protocol and variant
@@ -346,7 +347,7 @@ behavior tests without creating test caches in this package:
 ```bash
 PYTHONDONTWRITEBYTECODE=1 \
 python -B -m pytest -q -p no:cacheprovider \
-  ../exp_reprod/camelyon16_rl_ablation_2m/tests
+  exp_reprod/camelyon16_rl_ablation_2m/tests
 ```
 
 These tests cover matrix ordering, dry-run immutability, source provenance,

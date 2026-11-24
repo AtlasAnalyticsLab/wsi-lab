@@ -1,13 +1,12 @@
 # Provenance boundary
 
-The harness records the source and protocol/input identities needed to
-reproduce the experiment. Author-machine paths, command histories, measured
-outputs, and machine/storage inventories are intentionally excluded.
+The workflow records protocol/input identities, software versions, and the
+pinned HistoGym revision needed to reproduce the experiment. Author-machine
+paths, command histories, measured outputs, and machine/storage inventories
+are excluded from the committed package.
 
-The copied WSI-Lab runner resolves the library through `WSI_LAB_SOURCE_ROOT`,
-which setup points at the extracted submitted source tree. The shared
-`../../provenance/wsi_lab_source.sha256` manifest identifies its executable Python
-snapshot without Git; the historical measured revision remains recorded as
-provenance. The manifest generator requires the reproducer to supply a dataset
-root; no local default is embedded. `checksums.sha256` covers every
-redistributed experiment file except the checksum list itself.
+Set `WSI_LAB_SOURCE_ROOT` to the WSI-Lab repository's absolute path before
+running setup. The harness uses that local source tree. Configuration and
+validation check the dataset cohort, workload, protocol inputs, and required
+frozen belief checkpoint. The manifest generator requires an explicit dataset
+root; no machine-specific default is embedded.

@@ -18,24 +18,24 @@ by HistoGym.
 
 ## What is and is not included
 
-The package includes the benchmark harness, protocol templates, cohort
-identity, pinned source identities, software environments, setup/configuration
-scripts, fail-fast validation, measured-run wrappers, and analysis scripts.
-Keep this directory outside the WSI-Lab repository, beside the matching source
-tree:
+The package includes benchmark harnesses, protocol templates, cohort
+identities, software environments, setup/configuration scripts, fail-fast
+validation, measured-run wrappers, and analysis scripts. It lives inside the
+WSI-Lab repository:
 
 ```text
-parent/
-  wsi-lab/
+wsi-lab/
+  pyproject.toml
+  src/
   exp_reprod/
 ```
 
-Setup defaults to the sibling `wsi-lab/` directory. For a different source
-location, export `WSI_LAB_SOURCE_ROOT` as its absolute path; ablation commands
-also accept `--source-root`. Setup installs the selected source tree directly
-and verifies its executable Python files using
-`provenance/wsi_lab_source.sha256`; WSI-Lab Git history is not required. The
-external HistoGym source is still cloned and checked out at its pinned commit.
+Set `WSI_LAB_SOURCE_ROOT` to the repository's absolute path before running the
+efficiency workflows; each experiment README shows the commands. Setup
+installs that local source tree directly and checks out HistoGym at its pinned
+commit. WSI-Lab Git history is not required. The ablation commands also accept
+`--source-root` and retain the study-specific source and runtime compatibility
+checks described in their README.
 
 The following licensed or externally managed inputs are not redistributed:
 
@@ -57,11 +57,12 @@ uses a separate, user-selected work directory. These generated directories are
 not part of the source package. They may contain local paths or newly
 generated results; review them before redistribution.
 
-The packaged tree can be checked before publication with:
+From the repository root, select the source tree and check the package before
+publication:
 
 ```bash
-python scripts/privacy_check.py
-bash verify_all.sh
+export WSI_LAB_SOURCE_ROOT="$(pwd)"
+python exp_reprod/scripts/privacy_check.py
 ```
 
 For the ablation study, follow `camelyon16_rl_ablation_2m/README.md` for its
