@@ -69,9 +69,11 @@ wandb login
 ### Repository contents and Python distributions
 
 The repository contains the library, tests, configuration examples,
-documentation, and license. Paper-specific experiment reproduction materials
-are maintained separately and are not bundled with this repository or its
-Python distributions. The reference Conda environment installs the cloned
+documentation, license, and paper-specific experiment reproduction materials in
+[`exp_reprod/`](exp_reprod/README.md). The reproduction materials are not included
+in Python distributions. For this in-repository copy, set `WSI_LAB_SOURCE_ROOT`
+to the repository's absolute path before following the reproduction instructions.
+The reference Conda environment installs the cloned
 source tree in editable mode. To build a wheel and source distribution locally,
 run:
 
@@ -252,6 +254,43 @@ See [manual play](docs/MANUAL_PLAY.md) for keyboard controls and observation
 inspection. PPO checkpoints, validation decisions, dependency manifests, and
 aggregate/per-slide evaluations are stored under the fingerprinted run and
 model directories in `workspace/`.
+
+## Reproducing the experiments
+
+`exp_reprod/` contains the paper's reproduction materials for two HistoGym
+efficiency comparisons and the CAMELYON16 RL ablation study:
+
+- [Environment-only comparison](exp_reprod/environment_only/README.md) measures
+  native environment execution without policy or belief-model inference.
+- [Agent-integrated comparison](exp_reprod/agent_integrated/README.md) measures
+  native-observation recurrent-PPO interaction and optimization, including
+  WSI Lab's frozen belief inference.
+- [CAMELYON16 RL ablations](exp_reprod/camelyon16_rl_ablation_2m/README.md)
+  provide study setup, validation, training, and analysis instructions.
+
+Both efficiency protocols use the same deterministic 100-slide CAMELYON16
+cohort, 10,000 episodes, and 100 actions/interactions per episode. They include
+protocol templates, environments, setup and validation scripts, benchmark
+harnesses, and analysis code, but no measured outputs or datasets.
+
+Setup verifies the WSI Lab source snapshot by checksum and retrieves HistoGym
+at its recorded revision; WSI Lab Git history is not required. From the
+repository root, select this checkout as the source and check the package
+before starting either efficiency run:
+
+```bash
+export WSI_LAB_SOURCE_ROOT="$(pwd)"
+cd exp_reprod
+python scripts/privacy_check.py
+bash verify_all.sh
+```
+
+Then follow the selected experiment README. Both efficiency experiments require
+Linux, Conda, a CUDA-capable device, CAMELYON16, and the four UNI-v2 embedding
+collections. The agent-integrated experiment uses the bundled calibrated
+checkpoint. Full measured runs are intentionally expensive; complete package,
+configuration, and input validation before beginning them. The ablation guide
+provides its separate audit and protocol checks.
 
 ## Design summary
 

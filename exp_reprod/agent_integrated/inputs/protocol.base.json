@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "name": "wsi_lab_histogym_native_observation_recurrent_ppo_efficiency",
+  "scope": "computational efficiency only; no diagnostic-accuracy or reward comparison",
+  "source_identity": {
+    "wsi_lab": {
+      "kind": "sha256-file-manifest-v1",
+      "manifest": "provenance/wsi_lab_source.sha256",
+      "manifest_sha256": "ae742e4ccdfc0d8e951e8ace1a6bd67c3317cce5cd4100a8496d61a7ca7d32f4",
+      "measured_revision": "0deb7837364add790f9530c41f0ef0b5e616c05c"
+    },
+    "histogym": {
+      "kind": "git-commit",
+      "revision": "5b742760321d28a469d2ef9494e886a49d0aa7f7"
+    }
+  },
+  "cohort": {
+    "manifest": "cohort.json",
+    "manifest_sha256": "d0f881c60335ef4a9fb528ba1a101617843fd19091b3f1023a89b68086d93c0e",
+    "slide_count": 100,
+    "labels": [1]
+  },
+  "workload": {
+    "slide_schedule": "balanced_random_10k.json",
+    "slide_schedule_sha256": "aa58e160e59e98ae4c1a5a2555dff790104816ede763d4918d9e03808133e17c",
+    "schedule_projection": "episode_index, slide_id, and slide_ordinal only; legacy priority_codes are not used because PPO selects actions",
+    "episodes": 10000,
+    "episodes_per_slide": 100,
+    "interactions_per_episode": 100,
+    "total_interactions": 1000000,
+    "episode_boundary": "external time-limit truncation with value bootstrap",
+    "checkpoints": [1, 10, 50, 100, 500, 1000, 5000, 10000]
+  },
+  "native_observations": {
+    "histogym": {
+      "image": [3, 224, 224]
+    },
+    "wsi_lab": {
+      "global": [5, 224, 224],
+      "viewport": [3, 224, 224],
+      "scalars": [5]
+    }
+  },
+  "actions": {
+    "native_actor_dimensions": {
+      "histogym": 7,
+      "wsi_lab": 11
+    },
+    "benchmark_masks": {
+      "histogym_stay": false,
+      "wsi_lab_diagnosis": false
+    },
+    "boundary_no_ops": "retained as PPO transitions and reported separately"
+  },
+  "belief": {
+    "wsi_lab_called_natively": true,
+    "parameters_frozen": true,
+    "optimizer_updates": false,
+    "device": "cpu",
+    "checkpoint": "configured at runtime",
+    "precomputed_embedding_reads_included_online": true,
+    "uni_v2_generation_included": false
+  },
+  "policy": {
+    "seed": 1,
+    "device": "configured at runtime",
+    "dtype": "float32",
+    "visual_encoder": {
+      "layers": [
+        "Conv2d(C,32,kernel_size=8,stride=4)+ReLU",
+        "Conv2d(32,64,kernel_size=4,stride=2)+ReLU",
+        "Conv2d(64,64,kernel_size=3,stride=2)+ReLU",
+        "AdaptiveAvgPool2d(1)",
+        "Linear(64,256)+ReLU"
+      ],
+      "independent_branch_weights": true
+    },
+    "scalar_encoder": "Linear(5,64)+ReLU+Linear(64,64)+ReLU",
+    "fusion_output_dimension": 256,
+    "recurrent_core": "one-layer GRU(256,256)",
+    "separately_seeded_shared_shape_modules": true
+  },
+  "ppo": {
+    "num_envs": 1,
+    "rollout_steps": 800,
+    "sequence_length": 32,
+    "learning_rate": 0.00025,
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "clip_coef": 0.2,
+    "update_epochs": 4,
+    "entropy_coef": 0.01,
+    "value_coef": 0.5,
+    "max_grad_norm": 0.5,
+    "num_minibatches": 4,
+    "anneal_learning_rate": true,
+    "clip_value_loss": true,
+    "target_kl": null
+  },
+  "measurement": {
+    "gpu_index": null,
+    "resource_interval_seconds": 0.1,
+    "online_outer_includes": [
+      "native constructors, resets, steps, and closes",
+      "precomputed embedding lookup and frozen ABMIL inference",
+      "observation packing and host-to-device transfer",
+      "policy inference and action sampling",
+      "rollout bookkeeping and PPO optimization"
+    ],
+    "serialization_included": false,
+    "checkpoint_writes_included": false,
+    "targeted_file_cache_eviction": "best effort; no privileged global kernel-cache drop",
+    "backend_order": ["wsi_lab", "histogym"]
+  }
+}
