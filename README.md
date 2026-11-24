@@ -1,5 +1,7 @@
 # WSI Lab
 
+[paper](https://openreview.net/forum?id=y5vMVs7QSp)
+
 `wsi-lab` is a research package for sequential examination of whole-slide
 images (WSIs). It builds a dense six-level navigation hierarchy, attaches
 sparse tissue-filtered UNI-v2 evidence, trains a calibrated gated-attention
@@ -14,13 +16,22 @@ intentionally unsupported.
 > **Research use only.** This software is an experimental research artifact,
 > not a medical device or a system for clinical diagnosis or patient care.
 
-## Quick start from the workshop ZIP
+## Architecture
 
-Extract the submitted source archive and run all commands from its root:
+![WSI-Lab architecture showing local, global-spatial, and scalar observations, the diagnostic-belief model, and the reference RL policy](docs/assets/wsi-lab-overview.png)
+
+Overview from the [paper](https://openreview.net/forum?id=y5vMVs7QSp). The
+environment exposes the current viewport, global slide context, location and
+visit history, and diagnostic belief. The illustrated policy encoders and
+belief model are replaceable reference components.
+
+## Quick start
+
+Clone the public repository and create the reference Conda environment:
 
 ```bash
-unzip <submission-archive>.zip
-cd <extracted-wsi-lab-directory>
+git clone https://github.com/AhmedNAlagha/wsi-lab.git
+cd wsi-lab
 conda env create --file environment.yml
 conda activate wsi-lab
 wsi-lab smoke-test
@@ -31,12 +42,11 @@ The reference environment is intended for Linux, pins Python 3.11 and CUDA
 with its development tools. It requires Conda, Git, network access while
 installing pinned dependencies, an NVIDIA driver compatible with the selected
 PyTorch/CUDA build, and enough local storage for WSIs and preprocessing
-artifacts. Package metadata permits Python 3.11 or 3.12, but the submitted
-environment is the reproducibility reference.
+artifacts. Package metadata permits Python 3.11 or 3.12; use the reference
+environment for reproducibility.
 
-Do not reuse an unrelated WSI environment. See the
-[installation guide](docs/INSTALLATION.md) for environment verification, the
-CPU-only development variant, AtlasPatch/SAM2 setup, and troubleshooting.
+See the [installation guide](docs/INSTALLATION.md) for environment verification,
+CPU-only installation, AtlasPatch/SAM2 setup, and troubleshooting.
 
 The smoke test is entirely synthetic and requires no dataset or configuration.
 The standard data-free checks are:
@@ -56,25 +66,25 @@ python -m pip install -e '.[wandb]'
 wandb login
 ```
 
-### Source ZIP versus Python distributions
+### Repository contents and Python distributions
 
-The workshop ZIP is the complete submission artifact: it contains the source,
-tests, configuration examples, documentation, license, and `exp_reprod/`.
-Neither a wheel nor a source distribution is needed to use it. If a packaging
-check is desired, run:
+The repository contains the library, tests, configuration examples,
+documentation, and license. Paper-specific experiment reproduction materials
+are maintained separately and are not bundled with this repository or its
+Python distributions. The reference Conda environment installs the cloned
+source tree in editable mode. To build a wheel and source distribution locally,
+run:
 
 ```bash
 python -m build
 ```
 
-The generated, ignored `dist/` directory should not be placed inside the
-workshop ZIP unless the venue explicitly requests built distributions. Wheels
-and source distributions are installation artifacts, not substitutes for the
-full workshop archive or its reproduction materials.
+The generated `dist/` directory contains the wheel and source distribution and
+is excluded from version control.
 
 ## External inputs and licensing boundary
 
-The source archive does **not** redistribute:
+The repository does **not** redistribute:
 
 - CAMELYON16, CAMELYON17, or TCGA whole-slide images, labels, or annotations;
 - the four required UNI-v2 HDF5 embedding collections at 2.5x, 5x, 10x, and
@@ -85,10 +95,9 @@ WSI Lab consumes existing UNI-v2 embeddings in the AtlasPatch HDF5 schema; it
 does not generate those embeddings. The expected layouts and keys are defined
 in the [data-format guide](docs/DATA_FORMAT.md).
 
-The calibrated belief checkpoint required by the agent-integrated efficiency
-experiment **is included** at
-`exp_reprod/agent_integrated/models/calibrated_checkpoint.pt`. The reproduction
-scripts verify its recorded size and SHA-256 before use.
+Pretrained belief checkpoints are not bundled with this repository. Train a
+belief model using `wsi-lab train-belief` before running workflows that require
+one, as described below.
 
 WSI Lab's own code is Apache-2.0, but the pinned AtlasPatch 1.1.0 dependency is
 identified upstream as CC BY-NC-SA 4.0. WSI Lab's license does not replace
@@ -178,7 +187,7 @@ wsi-lab run --config "${CONFIG}" --dry-run
 Stages use content fingerprints and completion manifests. Compatible complete
 work is skipped, stale artifacts are rebuilt, and compatible incomplete
 training checkpoints resume. Generated state is written beneath the configured
-`workspace.root` and is intentionally excluded from the source archive.
+`workspace.root` and is excluded from version control.
 
 ### Official-test access
 
@@ -244,39 +253,6 @@ inspection. PPO checkpoints, validation decisions, dependency manifests, and
 aggregate/per-slide evaluations are stored under the fingerprinted run and
 model directories in `workspace/`.
 
-## Reproducing the efficiency comparisons
-
-`exp_reprod/` is the workshop reproduction package for
-two HistoGym comparisons:
-
-- `exp_reprod/environment_only/` measures native
-  environment execution without policy or belief-model inference.
-- `exp_reprod/agent_integrated/` measures
-  native-observation recurrent-PPO interaction and optimization, including
-  WSI Lab's frozen belief inference.
-
-Both protocols use the same deterministic 100-slide CAMELYON16 cohort, 10,000
-episodes, and 100 actions/interactions per episode. They contain protocol
-templates, environments, setup and validation scripts, benchmark harnesses,
-and analysis code, but no measured outputs or datasets.
-
-The reproduction workflows are designed to run directly from the extracted
-workshop source tree; they do not require `.git/` history or a WSI Lab Git
-worktree. Setup verifies the submitted WSI Lab source snapshot by checksum and
-retrieves HistoGym at its recorded revision. Before starting either long run:
-
-```bash
-cd exp_reprod
-python scripts/privacy_check.py
-bash verify_all.sh
-```
-
-Then follow the selected experiment README. Both experiments require Linux,
-Conda, a CUDA-capable device, CAMELYON16, and the four UNI-v2 embedding
-collections. The agent-integrated experiment uses the bundled calibrated
-checkpoint. Full measured runs are intentionally expensive; run package,
-configuration, and input validation before beginning them.
-
 ## Design summary
 
 Navigation is bounded by one box enclosing the union of tissue islands. The
@@ -303,17 +279,24 @@ semantics, reward, belief integration, recurrent PPO, and artifact contracts.
 | `configs/` | Portable strict-YAML experiment configurations |
 | `tests/` | Unit, integration, synthetic, and explicitly marked real-data tests |
 | `docs/` | Installation, configuration, data-format, design, manual-play, and third-party references |
-| `exp_reprod/` | ZIP-compatible HistoGym efficiency reproduction package |
 | `environment.yml` | Reference Linux/Python/CUDA environment |
 | `pyproject.toml` | Python package metadata, dependencies, entry points, and tool configuration |
-
-## Citation
-
-Citation metadata is intentionally withheld for double-blind review and will
-be added to the public release after peer review.
 
 ## License
 
 Except for separately identified third-party components and materials, WSI Lab
 is licensed under the [Apache License 2.0](LICENSE). See
 [THIRD_PARTY.md](docs/THIRD_PARTY.md) for dependency and model-asset terms.
+
+## Citation
+
+If you use WSI Lab in your research, please cite the
+[paper](https://openreview.net/forum?id=y5vMVs7QSp):
+
+```bibtex
+@misc{alagha_wsi_lab,
+  title = {{WSI-Lab}: A Pathologist-Inspired, High-Throughput {RL} Environment for Sequential Whole-Slide Analysis},
+  author = {Ahmed Alagha and Hadi Otrok and Rabeb Mizouni and Jamal Bentahar and Mahdi S. Hosseini},
+  url = {https://openreview.net/forum?id=y5vMVs7QSp}
+}
+```

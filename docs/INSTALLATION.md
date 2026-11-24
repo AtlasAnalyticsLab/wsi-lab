@@ -1,10 +1,12 @@
 # Installation
 
-## GPU environment used by this project
+## GPU installation
 
-The supported setup is a fresh Conda environment named `wsi-lab`. The pre-existing `wsi-nav-env` is unrelated and must not be activated, modified, or used to validate this package.
+The reference Linux setup uses a Conda environment named `wsi-lab`. Clone the
+repository and create the environment:
 
 ```bash
+git clone https://github.com/AhmedNAlagha/wsi-lab.git
 cd wsi-lab
 conda env create --file environment.yml
 conda activate wsi-lab
@@ -19,9 +21,10 @@ wandb login
 
 Authentication may instead be supplied through `WANDB_API_KEY`. Offline runs do not require login and can be uploaded later with `wandb sync PATH`.
 
-### Verify environment isolation and installed components
+### Verify the installation
 
-Run these checks only after activating the new environment. The first check fails if Python is outside the expected Conda prefix or if `wsi-nav-env` appears in the environment name, prefix, or executable. `EXPECTED_WSI_LAB_ENV` defaults to `wsi-lab`.
+After activating the environment, confirm that Python belongs to the active
+Conda prefix:
 
 ```bash
 python - <<'PY'
@@ -29,11 +32,10 @@ import os
 import sys
 from pathlib import Path
 
-expected = os.environ.get("EXPECTED_WSI_LAB_ENV", "wsi-lab")
 name = os.environ.get("CONDA_DEFAULT_ENV")
 prefix_text = os.environ.get("CONDA_PREFIX")
 if not prefix_text:
-    raise SystemExit("CONDA_PREFIX is unset; activate the dedicated Conda environment first")
+    raise SystemExit("CONDA_PREFIX is unset; activate your Conda environment first")
 prefix = Path(prefix_text).resolve()
 executable = Path(sys.executable).resolve()
 
@@ -42,10 +44,6 @@ print(f"CONDA_PREFIX={prefix}")
 print(f"python={executable}")
 print(f"python_version={sys.version}")
 
-if name != expected:
-    raise SystemExit(f"expected environment {expected!r}, found {name!r}")
-if "wsi-nav-env" in " ".join((str(name), str(prefix), str(executable))):
-    raise SystemExit("the prohibited wsi-nav-env is active or present in the executable path")
 try:
     executable.relative_to(prefix)
 except ValueError as exc:
@@ -151,11 +149,14 @@ atlaspatch info
 atlaspatch detect-tissue --help
 ```
 
-Keep the complete output with the test report. It provides the environment, CUDA, OpenSlide, AtlasPatch, SAM2, and package provenance required to reproduce preprocessing and training.
+Include this output when reporting installation issues. It records the
+environment, CUDA, OpenSlide, AtlasPatch, SAM2, and package versions and
+provenance needed to diagnose dependency problems.
 
-## CPU-only development variant
+## CPU-only installation
 
-The required project environment remains the GPU-enabled `wsi-lab`. For a separate CPU-only development environment, copy `environment.yml` to `environment.cpu.yml` and make all of these changes:
+For a CPU-only installation, copy `environment.yml` to `environment.cpu.yml`
+and make these changes:
 
 - change `name` to `wsi-lab-cpu`;
 - remove the `nvidia` channel;
@@ -168,13 +169,17 @@ Then create and verify it independently:
 ```bash
 conda env create --file environment.cpu.yml
 conda activate wsi-lab-cpu
-export EXPECTED_WSI_LAB_ENV=wsi-lab-cpu
 export EXPECT_CUDA=0
 ```
 
-Run the same isolation, library, provenance, and AtlasPatch CLI checks above. For CPU execution, set `belief.device: cpu`, `rl.device: cpu`, `rl.belief_device: cpu`, and `tissue.atlaspatch.device: cpu` in a copied configuration. Never use the CPU environment as evidence that the required CUDA `wsi-lab` setup works.
+Run the same environment, library, provenance, and AtlasPatch CLI checks above.
+For CPU execution, set `belief.device: cpu`, `rl.device: cpu`,
+`rl.belief_device: cpu`, and `tissue.atlaspatch.device: cpu` in a copied
+configuration. CUDA verification requires the GPU environment.
 
-AtlasPatch tissue segmentation is substantially slower on CPU. Mocked adapter tests and reuse of validated masks do not run SAM2 inference, so use those paths for routine CPU development. A real CPU AtlasPatch integration run should remain explicitly selected and bounded to one temporary slide artifact.
+AtlasPatch tissue segmentation is substantially slower on CPU. Use
+`wsi-lab smoke-test` for a quick, data-free installation check that does not
+invoke SAM2. Reusing compatible tissue masks also avoids segmentation.
 
 ## AtlasPatch and SAM2
 
@@ -222,8 +227,8 @@ There is deliberately no Otsu, HSV, or other fallback. AtlasPatch failures inclu
 ## Documentation and configuration in distributions
 
 Source distributions contain `LICENSE`, `README.md`, `environment.yml`,
-`configs/*.yaml`, and `docs/*.md`. Wheels install the same user-facing assets
-under the environment data prefix:
+`configs/*.yaml`, `docs/*.md`, and the documentation images in `docs/assets/`.
+Wheels install the same user-facing assets under the environment data prefix:
 
 ```text
 <sys.prefix>/share/wsi-lab/

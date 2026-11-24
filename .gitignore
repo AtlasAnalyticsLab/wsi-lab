@@ -51,6 +51,7 @@ Desktop.ini
 !.env.example
 
 # Generated pipeline, experiment, and logging artifacts
+/exp_reprod/
 workspace/
 runs/
 wandb/
