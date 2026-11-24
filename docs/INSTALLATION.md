@@ -6,7 +6,7 @@ The reference Linux setup uses a Conda environment named `wsi-lab`. Clone the
 repository and create the environment:
 
 ```bash
-git clone https://github.com/AhmedNAlagha/wsi-lab.git
+git clone https://github.com/AtlasAnalyticsLab/wsi-lab.git
 cd wsi-lab
 conda env create --file environment.yml
 conda activate wsi-lab

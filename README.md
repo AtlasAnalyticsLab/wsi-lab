@@ -30,7 +30,7 @@ belief model are replaceable reference components.
 Clone the public repository and create the reference Conda environment:
 
 ```bash
-git clone https://github.com/AhmedNAlagha/wsi-lab.git
+git clone https://github.com/AtlasAnalyticsLab/wsi-lab.git
 cd wsi-lab
 conda env create --file environment.yml
 conda activate wsi-lab
